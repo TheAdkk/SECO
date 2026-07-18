@@ -10,3 +10,4 @@ crate-type = ["cdylib"]
 [dependencies]
 seco-core = { path = "../../seco-core" }
 seco-clap = { path = "../../seco-clap" }
+seco-dsp = { path = "../../seco-dsp" }

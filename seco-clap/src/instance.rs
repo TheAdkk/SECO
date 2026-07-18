@@ -712,4 +712,100 @@ mod tests {
         // SAFETY: created above; not used again after this call.
         unsafe { ((*plugin).destroy)(plugin) };
     }
+
+    /// The hazard that forced the shared-borrow redesign, actually exercised:
+    /// the host reads the parameter from the main thread (`get_value`,
+    /// `[main-thread]`) *while* the audio thread is inside `process()`. CLAP
+    /// explicitly permits this pair to overlap. Under miri this runs with the
+    /// data-race detector: the old `&mut Instance` model fails here, the
+    /// shared-borrow + atomic + UnsafeCell model must pass, and reads must
+    /// never be torn (only whole written values observable).
+    ///
+    /// `params.flush` is deliberately NOT exercised concurrently — the spec
+    /// forbids it running at the same time as `process()`
+    /// (ext/params.h:295-296), so that overlap is outside the host contract.
+    #[test]
+    fn get_value_races_process_without_ub() {
+        const ITERS: usize = if cfg!(miri) { 64 } else { 2000 };
+
+        struct SendPlugin(*const ClapPlugin);
+        // SAFETY: the instance outlives both threads (destroy happens after
+        // join), and the two threads invoke exactly the callback pair CLAP
+        // permits to run concurrently for one instance.
+        unsafe impl Send for SendPlugin {}
+
+        let plugin = create::<HalfGain>(ptr::null());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let reader = {
+            let plugin = SendPlugin(plugin);
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                // Move the whole wrapper, not just its field: closures
+                // capture disjoint fields since Rust 2021, and capturing the
+                // bare `*const` would sidestep SendPlugin's `Send` impl.
+                let plugin = plugin;
+                let SendPlugin(plugin) = plugin;
+                barrier.wait();
+                for _ in 0..ITERS {
+                    let mut value = f64::NAN;
+                    // SAFETY: live instance; concurrent with `process()` by
+                    // design, which the spec allows for `get_value`.
+                    let ok = unsafe {
+                        (ParamsImpl::<HalfGain>::VTABLE.get_value)(
+                            plugin,
+                            params::DUMMY_PARAM_ID,
+                            &raw mut value,
+                        )
+                    };
+                    assert!(ok);
+                    assert!(
+                        value == 0.5 || value == 0.25 || value == 0.75,
+                        "torn or corrupt read: {value}"
+                    );
+                }
+            })
+        };
+
+        let mut l = vec![0.0_f32; 16];
+        let mut r = vec![0.0_f32; 16];
+        barrier.wait();
+        for i in 0..ITERS {
+            let event = ClapEventParamValue {
+                header: crate::ffi::ClapEventHeader {
+                    size: size_of::<ClapEventParamValue>() as u32,
+                    time: 0,
+                    space_id: CLAP_CORE_EVENT_SPACE_ID,
+                    type_: CLAP_EVENT_PARAM_VALUE,
+                    flags: 0,
+                },
+                param_id: params::DUMMY_PARAM_ID,
+                cookie: ptr::null_mut(),
+                note_id: -1,
+                port_index: -1,
+                channel: -1,
+                key: -1,
+                value: if i % 2 == 0 { 0.25 } else { 0.75 },
+            };
+            let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> =
+                vec![(&raw const event).cast()];
+            let in_events = ClapInputEvents {
+                ctx: (&raw mut ptrs).cast(),
+                size: list_size,
+                get: list_get,
+            };
+            let mut out_ptrs = [l.as_mut_ptr(), r.as_mut_ptr()];
+            let mut out_buf = stereo_buffer(&mut out_ptrs);
+            let process =
+                process_struct(16, None, &raw mut out_buf, ptr::null(), &raw const in_events);
+            // SAFETY: live instance; audio-thread role held by this thread
+            // only, per the test's structure.
+            let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
+            assert_eq!(status, CLAP_PROCESS_CONTINUE);
+        }
+
+        reader.join().unwrap();
+        // SAFETY: created above, both threads joined; not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
 }

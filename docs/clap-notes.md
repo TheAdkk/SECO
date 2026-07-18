@@ -138,11 +138,20 @@ These are the *transport's own* `flags` field. Do not confuse with
 
 The header says only "position in beats" / tempo "in bpm". It does **not**
 define whether a beat is a quarter note or the time-signature denominator unit.
-Convention in other APIs (and, reportedly, in hosts like Bitwig and REAPER) is
-quarter-note PPQ, but the header does not say so. **Unverified — this is the
-main thing Phase 2 must confirm empirically in two DAWs** (e.g. play a 4/4 loop
-at 120 BPM for 1 second → does `song_pos_beats` advance by 2.0?). Also check
-6/8 if we want to be thorough.
+
+**Empirically resolved (Phase 2, 2026-07): a beat is a quarter note.**
+Observed via patada's transport trace log:
+
+- REAPER 7.77 (macOS), 4/4 at 120 BPM: `song_pos_beats` advances at exactly
+  2.000/s (= 120/60), matching `song_pos_seconds` sample-for-sample
+  (e.g. `ppq=40.080 sec=20.040` … `ppq=41.104 sec=20.552`), and `bar_start`
+  increments by +4.0 per 4/4 bar (4 quarter notes).
+- clap-validator's synthetic transport at 110 BPM: `ppq/sec = 1.8333 =
+  110/60`, consistent.
+
+A 6/8 discriminator run was unnecessary — the 4/4 rate + bar length already
+pin the unit. Caveat: verified in REAPER (plus clap-validator); a second real
+DAW (Bitwig) has not cross-checked this yet.
 
 ### 1.6 Implications for `patada`'s edge cases
 
@@ -372,15 +381,25 @@ docs suggest.
   fixed-size char arrays inside `clap_param_info` / `clap_audio_port_info`.
 - `clap_version_is_compatible(v)` ⇔ `v.major >= 1` (`version.h:38-42`).
 
-## 11. Open questions for Phase 2 (empirical, per host)
+## 11. Phase 2 empirical results (REAPER 7.77, macOS; log: patada trace)
 
-1. **Beat unit**: does `song_pos_beats` advance in quarter notes regardless of
-   time signature? (§1.5 — header is silent.)
-2. Which flags do real hosts actually set when stopped? (Does Bitwig/REAPER
-   keep `HAS_BEATS_TIMELINE` with a frozen position, or drop it?)
-3. Does any tested host emit mid-block `CLAP_EVENT_TRANSPORT` events or
-   nonzero `tempo_inc`, or is per-block `clap_process.transport` all we ever
-   see?
-4. What does `song_pos_beats` do while stopped and the user drags the
-   playhead?
-5. Does any tested host ever call `process()` with `transport == NULL`?
+1. **Beat unit: quarter note.** Answered — see §1.5.
+2. **Stopped transport (REAPER):** `IS_PLAYING` clears but every `HAS_*`
+   flag stays set and `song_pos_beats` **freezes** at the stop position
+   (observed `flags 0b00011111 → 0b00001111`, ppq pinned at 108.0). The
+   free-run internal accumulator is therefore mandatory for `patada`, not a
+   nice-to-have.
+3. **Mid-block transport events:** none observed — `tp_events=0` across
+   every REAPER and clap-validator run. `tempo_inc` behavior under tempo
+   ramps remains unobserved (constant-tempo sessions only). Per-block
+   `clap_process.transport` was the only delivery seen.
+4. **Playhead drag while stopped:** not yet observed (not exercised).
+5. **`transport == NULL`:** never seen — `has_tp=true` on every block in
+   both hosts tested.
+6. **Loop wrap (REAPER):** `song_pos_beats` jumps **backward with no
+   interpolation** at the loop point (observed `blocks=3847 ppq=121.27 →
+   blocks=3883 ppq=113.66`). Unhandled, this clicks on every pass — this is
+   the transport-jump edge case Phase 3 must absorb (hard resync + declick).
+
+Pending: Bitwig cross-check of all of the above (F2 closed on REAPER data);
+tempo-ramp behavior of `tempo_inc`.

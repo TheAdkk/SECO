@@ -59,7 +59,7 @@ impl Plugin for Patada {
     const ID: &'static str = "dev.seco.patada";
     const NAME: &'static str = "patada";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.3.3";
+    const VERSION: &'static str = "0.3.4";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[

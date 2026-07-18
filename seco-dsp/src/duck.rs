@@ -40,9 +40,12 @@ pub fn punch() -> CurveTable {
     CurveTable::from_fn(|phase| ducked(phase, 0.015, |t| (t / 0.34).min(1.0).powf(0.8)))
 }
 
-/// Soft: wider attack (6%), raised-cosine recovery, gentle the whole way.
+/// Soft: same 2% attack as Pump — the duck must land on the beat — with the
+/// softness where it is actually heard: a raised-cosine recovery across the
+/// whole cycle. (A 6% attack put ~36 ms of full volume after every beat at
+/// 99 BPM, audibly "volume first, duck later".)
 pub fn soft() -> CurveTable {
-    CurveTable::from_fn(|phase| ducked(phase, 0.06, |t| 0.5 - 0.5 * (PI * t).cos()))
+    CurveTable::from_fn(|phase| ducked(phase, 0.02, |t| 0.5 - 0.5 * (PI * t).cos()))
 }
 
 #[cfg(test)]
@@ -70,6 +73,24 @@ mod tests {
                 (curve.lookup(0.0) - 1.0).abs() < SEAM_EPSILON,
                 "{name}: cycle must start recovered (gain 1.0), got {}",
                 curve.lookup(0.0)
+            );
+        }
+    }
+
+    /// The duck must land essentially ON the beat: a wide attack turns into
+    /// an audible full-volume window after every beat before the dip
+    /// arrives (36 ms at 99 BPM with the old 6% Soft attack — reported by
+    /// ear as "full volume, then an abrupt drop"). Every shipped curve must
+    /// be deep within the first 4% of the cycle.
+    #[test]
+    fn duck_lands_near_the_beat() {
+        for (name, curve) in shipped() {
+            let min = (0..=40)
+                .map(|i| curve.lookup(i as f32 * 0.001))
+                .fold(f32::MAX, f32::min);
+            assert!(
+                min < 0.15,
+                "{name}: still at gain {min} within 4% of the cycle — duck lands late"
             );
         }
     }

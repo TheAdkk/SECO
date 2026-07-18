@@ -1,0 +1,8 @@
+[package]
+name = "seco-dsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# None: pure functions over f32/f64, testable without any host.

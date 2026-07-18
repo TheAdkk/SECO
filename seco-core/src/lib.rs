@@ -13,4 +13,14 @@ mod rt;
 
 pub use buffer::AudioBuffer;
 pub use plugin::Plugin;
-pub use rt::{RtContext, with_rt_context};
+pub use rt::RtContext;
+
+/// Not public API — adapter-only entry points, exempt from semver.
+///
+/// The `__private` path is the fence and `#[doc(hidden)]` is the sign
+/// (serde/tokio convention): signaling, not a guarantee. See [`RtContext`]
+/// for what breaks if you climb over it.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::rt::with_rt_context;
+}

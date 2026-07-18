@@ -4,7 +4,8 @@ use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::slice;
 
-use seco_core::{AudioBuffer, Plugin, with_rt_context};
+use seco_core::__private::with_rt_context;
+use seco_core::{AudioBuffer, Plugin};
 
 use crate::ext::audio_ports;
 use crate::factory;

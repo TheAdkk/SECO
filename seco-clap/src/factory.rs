@@ -116,5 +116,5 @@ unsafe extern "C" fn create_plugin<P: Plugin>(
     if id.to_bytes() != P::ID.as_bytes() {
         return ptr::null();
     }
-    instance::create::<P>()
+    instance::create::<P>(host)
 }

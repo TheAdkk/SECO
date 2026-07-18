@@ -1,9 +1,13 @@
 use std::marker::PhantomData;
 
-/// Witness that code is running inside the real-time audio callback.
+use crate::Transport;
+
+/// Witness and per-callback context for the real-time audio thread.
 ///
-/// APIs that must only run on the audio thread take `&RtContext`, so calling
-/// them elsewhere fails to compile unless a witness is in scope.
+/// Carries everything a plugin may consult during one `process()` call —
+/// today the [`Transport`] — so [`Plugin::process`](crate::Plugin::process)
+/// keeps one stable context parameter as the framework grows, instead of
+/// sprouting a new argument per phase.
 ///
 /// What the type system actually enforces: the type has no public
 /// constructor, is `!Send`/`!Sync` (the borrow cannot leave its thread), and
@@ -15,8 +19,6 @@ use std::marker::PhantomData;
 /// reaches into `__private` gets a witness that lies, and owns the
 /// consequences.
 ///
-/// The type is zero-sized; it compiles to nothing.
-///
 /// Phase 3 wires the debug allocation detector into the runner: for its
 /// duration the thread is flagged as real-time, and heap allocation panics in
 /// debug builds. Two constraints already known: the flag must be scoped per
@@ -25,17 +27,26 @@ use std::marker::PhantomData;
 /// with nested runner calls, a bool would be cleared by the innermost exit
 /// while the outer callback is still real-time.
 pub struct RtContext {
+    transport: Transport,
     // Raw pointers are neither `Send` nor `Sync`, so this marker makes the
     // whole type `!Send + !Sync` with zero cost and zero `unsafe`.
     _not_send_not_sync: PhantomData<*const ()>,
 }
 
-/// Runs `f` with a real-time context witness. Adapter crates call this once
-/// per audio callback, wrapping the call into
+impl RtContext {
+    /// Musical time information for the current block, as of its first
+    /// sample.
+    pub fn transport(&self) -> &Transport {
+        &self.transport
+    }
+}
+
+/// Runs `f` with a real-time context. Adapter crates call this once per
+/// audio callback, wrapping the call into
 /// [`Plugin::process`](crate::Plugin::process).
 ///
 /// Exposed only through `seco_core::__private`: see [`RtContext`] for what
 /// that fence does and does not guarantee.
-pub fn with_rt_context<R>(f: impl FnOnce(&RtContext) -> R) -> R {
-    f(&RtContext { _not_send_not_sync: PhantomData })
+pub fn with_rt_context<R>(transport: Transport, f: impl FnOnce(&RtContext) -> R) -> R {
+    f(&RtContext { transport, _not_send_not_sync: PhantomData })
 }

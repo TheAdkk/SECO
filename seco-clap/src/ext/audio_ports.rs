@@ -3,12 +3,11 @@
 //! Fixed for now — SECO v1 plugins are stereo effects. When a plugin needs to
 //! choose its own layout, this becomes part of the `Plugin` trait.
 
-use std::ffi::c_char;
-
 use crate::ffi::{
-    CLAP_AUDIO_PORT_IS_MAIN, CLAP_NAME_SIZE, CLAP_PORT_STEREO, ClapAudioPortInfo, ClapPlugin,
+    CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_STEREO, ClapAudioPortInfo, ClapPlugin,
     ClapPluginAudioPorts,
 };
+use crate::util::fixed_cstr;
 
 pub(crate) const VTABLE: ClapPluginAudioPorts = ClapPluginAudioPorts { count, get };
 /// `&'static` handle to [`VTABLE`], for returning from `get_extension`.
@@ -29,10 +28,6 @@ unsafe extern "C" fn get(
     if index != 0 || info.is_null() {
         return false;
     }
-    let mut name = [0 as c_char; CLAP_NAME_SIZE];
-    for (dst, src) in name.iter_mut().zip(b"main") {
-        *dst = *src as c_char;
-    }
     // Written via `ptr::write`, not `&mut *info`: the host's out-param may be
     // uninitialized memory, and forming a reference to it would already be UB.
     //
@@ -41,7 +36,7 @@ unsafe extern "C" fn get(
     unsafe {
         info.write(ClapAudioPortInfo {
             id: 0,
-            name,
+            name: fixed_cstr("main"),
             flags: CLAP_AUDIO_PORT_IS_MAIN,
             channel_count: 2,
             port_type: CLAP_PORT_STEREO.as_ptr(),

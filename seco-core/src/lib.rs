@@ -10,10 +10,12 @@
 mod buffer;
 mod plugin;
 mod rt;
+mod transport;
 
 pub use buffer::AudioBuffer;
 pub use plugin::Plugin;
 pub use rt::RtContext;
+pub use transport::Transport;
 
 /// Not public API — adapter-only entry points, exempt from semver.
 ///

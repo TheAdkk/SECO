@@ -15,3 +15,6 @@ pub mod ffi;
 
 mod export;
 mod instance;
+#[cfg(debug_assertions)]
+mod trace;
+mod util;

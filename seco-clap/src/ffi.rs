@@ -255,6 +255,22 @@ pub struct ClapEventTransport {
     pub tsig_denom: u16,
 }
 
+/// `clap_event_param_value_t` — `events.h:222-237`. Sets a parameter's
+/// value. `cookie` may be null (`ext/params.h:237-239`); the note-targeting
+/// fields are `-1` for a global (non-polyphonic) change.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ClapEventParamValue {
+    pub header: ClapEventHeader,
+    pub param_id: ClapId,
+    pub cookie: *mut c_void,
+    pub note_id: i32,
+    pub port_index: i16,
+    pub channel: i16,
+    pub key: i16,
+    pub value: f64,
+}
+
 /// `clap_input_events_t` — `events.h:344-353`. Host-sorted by sample time.
 #[repr(C)]
 pub struct ClapInputEvents {
@@ -363,4 +379,94 @@ pub struct ClapPluginAudioPorts {
         is_input: bool,
         info: *mut ClapAudioPortInfo,
     ) -> bool,
+}
+
+// --------------------------------------------------------- ext/params.h
+
+/// `CLAP_EXT_PARAMS` — `ext/params.h:127`.
+pub const CLAP_EXT_PARAMS: &CStr = c"clap.params";
+
+/// `clap_param_info_flags` — `ext/params.h:133-207` (complete, in order).
+pub const CLAP_PARAM_IS_STEPPED: u32 = 1 << 0;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_PERIODIC: u32 = 1 << 1;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_HIDDEN: u32 = 1 << 2;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_READONLY: u32 = 1 << 3;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_BYPASS: u32 = 1 << 4;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_AUTOMATABLE: u32 = 1 << 5;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID: u32 = 1 << 6;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_AUTOMATABLE_PER_KEY: u32 = 1 << 7;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL: u32 = 1 << 8;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_AUTOMATABLE_PER_PORT: u32 = 1 << 9;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_MODULATABLE: u32 = 1 << 10;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID: u32 = 1 << 11;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_MODULATABLE_PER_KEY: u32 = 1 << 12;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL: u32 = 1 << 13;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_MODULATABLE_PER_PORT: u32 = 1 << 14;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_REQUIRES_PROCESS: u32 = 1 << 15;
+/// See [`CLAP_PARAM_IS_STEPPED`].
+pub const CLAP_PARAM_IS_ENUM: u32 = 1 << 16;
+
+/// `clap_param_info_t` — `ext/params.h:211-256`.
+#[repr(C)]
+pub struct ClapParamInfo {
+    pub id: ClapId,
+    pub flags: u32,
+    pub cookie: *mut c_void,
+    pub name: [c_char; CLAP_NAME_SIZE],
+    pub module: [c_char; CLAP_PATH_SIZE],
+    pub min_value: f64,
+    pub max_value: f64,
+    pub default_value: f64,
+}
+
+/// `clap_plugin_params_t` — `ext/params.h:258-307`. All `[main-thread]`
+/// except `flush`, which is `[active ? audio-thread : main-thread]`.
+/// (The host-side struct and the rescan/clear flag enums are not mirrored
+/// yet: nothing in Phase 2 uses them.)
+#[repr(C)]
+pub struct ClapPluginParams {
+    pub count: unsafe extern "C" fn(plugin: *const ClapPlugin) -> u32,
+    pub get_info: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        param_index: u32,
+        param_info: *mut ClapParamInfo,
+    ) -> bool,
+    pub get_value: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        param_id: ClapId,
+        out_value: *mut f64,
+    ) -> bool,
+    pub value_to_text: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        param_id: ClapId,
+        value: f64,
+        out_buffer: *mut c_char,
+        out_buffer_capacity: u32,
+    ) -> bool,
+    pub text_to_value: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        param_id: ClapId,
+        param_value_text: *const c_char,
+        out_value: *mut f64,
+    ) -> bool,
+    pub flush: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        in_: *const ClapInputEvents,
+        out: *const ClapOutputEvents,
+    ),
 }

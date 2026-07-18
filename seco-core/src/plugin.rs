@@ -40,7 +40,8 @@ pub trait Plugin: Send + 'static {
     fn reset(&mut self) {}
 
     /// Processes one block of audio in place. Runs on the audio thread:
-    /// no allocation, no locks, no I/O. `rt` witnesses that constraint —
-    /// see [`RtContext`].
+    /// no allocation, no locks, no I/O. `rt` witnesses that constraint and
+    /// carries the block's context (e.g. `rt.transport()`) — see
+    /// [`RtContext`].
     fn process(&mut self, audio: &mut AudioBuffer, rt: &RtContext);
 }

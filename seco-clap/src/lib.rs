@@ -13,8 +13,21 @@ pub mod ext;
 pub mod factory;
 pub mod ffi;
 
+mod alloc;
 mod export;
 mod instance;
 #[cfg(debug_assertions)]
 mod trace;
 mod util;
+
+pub use alloc::RtAllocCheck;
+
+/// Capacity of the per-instance parameter storage. `seco_export!` rejects
+/// plugins declaring more at compile time.
+pub const MAX_PARAMS: usize = 32;
+
+/// Not public API — re-exports for `seco_export!` expansions only.
+#[doc(hidden)]
+pub mod __reexport {
+    pub use seco_core::Plugin;
+}

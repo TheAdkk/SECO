@@ -9,7 +9,7 @@
 //! `Instance` is undefined behavior regardless of which fields they touch.
 //!
 //! The rule now: an `Instance` is only ever borrowed **shared** (`&`).
-//! Concurrently-visible values (the dummy parameter, the trace slots) are
+//! Concurrently-visible values (the parameters, the trace slots) are
 //! atomics, safe through `&`. The plugin state `P` lives in an `UnsafeCell`,
 //! and only callbacks that CLAP serializes against each other (the
 //! audio-thread group, and lifecycle calls that the host must not overlap
@@ -25,16 +25,19 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use seco_core::__private::with_rt_context;
 use seco_core::{AudioBuffer, Plugin, Transport};
 
+use crate::MAX_PARAMS;
 use crate::ext::audio_ports;
-use crate::ext::params::{self, ParamsImpl};
+use crate::ext::params::ParamsImpl;
+use crate::ext::state::StateImpl;
 use crate::factory;
 use crate::ffi::{
     CLAP_BEATTIME_FACTOR, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT,
-    CLAP_EXT_AUDIO_PORTS, CLAP_EXT_PARAMS, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR,
-    CLAP_SECTIME_FACTOR, CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
-    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_PLAYING,
-    ClapAudioBuffer, ClapEventParamValue, ClapEventTransport, ClapHost, ClapInputEvents,
-    ClapPlugin, ClapPluginAudioPorts, ClapPluginParams, ClapProcess, ClapProcessStatus,
+    CLAP_EXT_AUDIO_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_PROCESS_CONTINUE,
+    CLAP_PROCESS_ERROR, CLAP_SECTIME_FACTOR, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+    CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
+    CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_PLAYING, ClapAudioBuffer,
+    ClapEventParamValue, ClapEventTransport, ClapHost, ClapInputEvents, ClapPlugin,
+    ClapPluginAudioPorts, ClapPluginParams, ClapPluginState, ClapProcess, ClapProcessStatus,
 };
 
 /// Channel capacity of the stack-allocated slice table in `plugin_process`.
@@ -51,9 +54,11 @@ pub(crate) struct Instance<P: Plugin> {
     /// See the module docs: `&mut P` is only materialized inside callbacks
     /// whose exclusivity CLAP guarantees.
     state: UnsafeCell<P>,
-    /// Phase 2 dummy parameter (f64 bit pattern). Atomic because the main
-    /// thread reads it (`get_value`) while the audio thread applies events.
-    pub(crate) dummy_param_bits: AtomicU64,
+    /// Plain parameter values as f64 bit patterns, indexed like
+    /// `P::PARAMS`. Atomics because the main thread reads them (`get_value`,
+    /// state save) while the audio thread applies events. Slots beyond
+    /// `P::PARAMS.len()` are unused.
+    pub(crate) param_bits: [AtomicU64; MAX_PARAMS],
     #[cfg(debug_assertions)]
     pub(crate) trace: std::sync::Arc<crate::trace::TransportTrace>,
     #[cfg(debug_assertions)]
@@ -63,8 +68,10 @@ pub(crate) struct Instance<P: Plugin> {
 }
 
 pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
-    // The host pointer is only consulted by the debug-build trace so far;
-    // Phase 3 (host callbacks like request_flush) will store it.
+    // seco_export! asserts this at compile time; direct users of this crate
+    // (tests) get the check here.
+    assert!(P::PARAMS.len() <= MAX_PARAMS, "plugin declares more parameters than MAX_PARAMS");
+    // The host pointer is only consulted by the debug-build trace so far.
     #[cfg(not(debug_assertions))]
     let _ = host;
     #[cfg(debug_assertions)]
@@ -108,7 +115,11 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
             on_main_thread: plugin_on_main_thread,
         },
         state: UnsafeCell::new(P::new()),
-        dummy_param_bits: AtomicU64::new(params::DUMMY_PARAM_DEFAULT.to_bits()),
+        param_bits: std::array::from_fn(|index| {
+            let default =
+                P::PARAMS.get(index).map(|desc| desc.range.default_plain()).unwrap_or(0.0);
+            AtomicU64::new(default.to_bits())
+        }),
         #[cfg(debug_assertions)]
         trace,
         #[cfg(debug_assertions)]
@@ -141,8 +152,8 @@ pub(crate) unsafe fn shared<'a, P: Plugin>(plugin: *const ClapPlugin) -> &'a Ins
 }
 
 /// Applies the events SECO understands from a host event list: parameter
-/// values into the dummy param atomic (and, in debug builds, counts
-/// mid-block transport events). Shared by `process()` and `params.flush`.
+/// values into the param atomics (and, in debug builds, counts mid-block
+/// transport events). Shared by `process()` and `params.flush`.
 ///
 /// SAFETY contract for callers: `list`, if non-null, must be valid for the
 /// duration of the call, with host-provided vtable functions.
@@ -172,8 +183,9 @@ pub(crate) unsafe fn apply_input_events<P: Plugin>(
                 // SAFETY: size checked against the full event; CLAP events
                 // are contiguous blobs of `size` bytes (events.h:14-17).
                 let event = unsafe { &*header.cast::<ClapEventParamValue>() };
-                if event.param_id == params::DUMMY_PARAM_ID {
-                    inst.dummy_param_bits.store(event.value.to_bits(), Relaxed);
+                let index = event.param_id as usize;
+                if index < P::PARAMS.len() {
+                    inst.param_bits[index].store(event.value.to_bits(), Relaxed);
                 }
             }
             #[cfg(debug_assertions)]
@@ -369,11 +381,19 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
 
     let mut audio = AudioBuffer::new(&mut channels[..used]);
     let transport = transport.map(convert_transport).unwrap_or_default();
+    // Block-start snapshot: the plugin sees one coherent value per param for
+    // the whole block (events above landed first). Stack array, no alloc.
+    let mut params_snapshot = [0.0_f64; MAX_PARAMS];
+    for (slot, bits) in params_snapshot.iter_mut().zip(&inst.param_bits).take(P::PARAMS.len()) {
+        *slot = f64::from_bits(bits.load(Relaxed));
+    }
     // SAFETY (state): `[audio-thread]` — at most one audio thread exists per
     // instance (thread-check.h:30-40); main-thread param callbacks touch only
     // atomics, never `state`. Exclusive.
     let state = unsafe { &mut *inst.state.get() };
-    with_rt_context(transport, |rt| state.process(&mut audio, rt));
+    with_rt_context(transport, &params_snapshot[..P::PARAMS.len()], |rt| {
+        state.process(&mut audio, rt)
+    });
     CLAP_PROCESS_CONTINUE
 }
 
@@ -392,6 +412,8 @@ unsafe extern "C" fn plugin_get_extension<P: Plugin>(
         (audio_ports::VTABLE_REF as *const ClapPluginAudioPorts).cast()
     } else if id == CLAP_EXT_PARAMS {
         (ParamsImpl::<P>::VTABLE_REF as *const ClapPluginParams).cast()
+    } else if id == CLAP_EXT_STATE {
+        (StateImpl::<P>::VTABLE_REF as *const ClapPluginState).cast()
     } else {
         ptr::null()
     }
@@ -402,7 +424,7 @@ unsafe extern "C" fn plugin_on_main_thread(_plugin: *const ClapPlugin) {}
 
 #[cfg(test)]
 mod tests {
-    use seco_core::RtContext;
+    use seco_core::{ParamDesc, ParamRange, RtContext};
 
     use super::*;
 
@@ -418,6 +440,10 @@ mod tests {
         const NAME: &'static str = "half-gain";
         const VENDOR: &'static str = "SECO tests";
         const VERSION: &'static str = "0.0.0";
+        const PARAMS: &'static [ParamDesc] = &[ParamDesc {
+            name: "Test",
+            range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5 },
+        }];
 
         fn new() -> Self {
             HalfGain { last_transport: None }
@@ -672,7 +698,7 @@ mod tests {
                 type_: CLAP_EVENT_PARAM_VALUE,
                 flags: 0,
             },
-            param_id: params::DUMMY_PARAM_ID,
+            param_id: 0,
             cookie: ptr::null_mut(),
             note_id: -1,
             port_index: -1,
@@ -695,7 +721,7 @@ mod tests {
 
         // SAFETY: live instance; atomics are shared-safe.
         let inst = unsafe { shared::<HalfGain>(plugin) };
-        assert_eq!(f64::from_bits(inst.dummy_param_bits.load(Relaxed)), 0.75);
+        assert_eq!(f64::from_bits(inst.param_bits[0].load(Relaxed)), 0.75);
 
         // And the params vtable must report the same through get_value.
         let mut read_back = 0.0_f64;
@@ -703,7 +729,7 @@ mod tests {
         let ok = unsafe {
             (ParamsImpl::<HalfGain>::VTABLE.get_value)(
                 plugin,
-                params::DUMMY_PARAM_ID,
+                0,
                 &raw mut read_back,
             )
         };
@@ -754,7 +780,7 @@ mod tests {
                     let ok = unsafe {
                         (ParamsImpl::<HalfGain>::VTABLE.get_value)(
                             plugin,
-                            params::DUMMY_PARAM_ID,
+                            0,
                             &raw mut value,
                         )
                     };
@@ -779,7 +805,7 @@ mod tests {
                     type_: CLAP_EVENT_PARAM_VALUE,
                     flags: 0,
                 },
-                param_id: params::DUMMY_PARAM_ID,
+                param_id: 0,
                 cookie: ptr::null_mut(),
                 note_id: -1,
                 port_index: -1,

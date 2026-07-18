@@ -381,6 +381,48 @@ pub struct ClapPluginAudioPorts {
     ) -> bool,
 }
 
+// -------------------------------------------------------------- stream.h
+
+/// `clap_istream_t` — `stream.h:22-27`. `read` returns bytes read, `0` at
+/// EOF, `-1` on error — and may return *fewer bytes than requested*, so
+/// consumers must loop (`stream.h:10-16`).
+#[repr(C)]
+pub struct ClapIStream {
+    pub ctx: *mut c_void,
+    pub read: unsafe extern "C" fn(
+        stream: *const ClapIStream,
+        buffer: *mut c_void,
+        size: u64,
+    ) -> i64,
+}
+
+/// `clap_ostream_t` — `stream.h:29-34`. `write` returns bytes written or
+/// `-1`; partial writes possible, loop as with reads.
+#[repr(C)]
+pub struct ClapOStream {
+    pub ctx: *mut c_void,
+    pub write: unsafe extern "C" fn(
+        stream: *const ClapOStream,
+        buffer: *const c_void,
+        size: u64,
+    ) -> i64,
+}
+
+// ---------------------------------------------------------- ext/state.h
+
+/// `CLAP_EXT_STATE` — `ext/state.h:18`. Without it, hosts should not
+/// persist parameter values at all (`ext/params.h:101-107`).
+pub const CLAP_EXT_STATE: &CStr = c"clap.state";
+
+/// `clap_plugin_state_t` — `ext/state.h:24-34`. Both `[main-thread]`.
+#[repr(C)]
+pub struct ClapPluginState {
+    pub save:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapOStream) -> bool,
+    pub load:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapIStream) -> bool,
+}
+
 // --------------------------------------------------------- ext/params.h
 
 /// `CLAP_EXT_PARAMS` — `ext/params.h:127`.

@@ -8,7 +8,7 @@
 
 use seco_clap::seco_export;
 use seco_core::{AudioBuffer, ParamDesc, ParamRange, Plugin, RtContext};
-use seco_dsp::{CurveTable, OnePole};
+use seco_dsp::{CurveTable, OnePole, duck};
 
 const PARAM_RATE: usize = 0;
 const PARAM_MIX: usize = 1;
@@ -43,25 +43,17 @@ struct Patada {
     gain: Vec<f32>,
 }
 
+/// The shipped curves live in seco-dsp (`duck`), where a unit test enforces
+/// the cyclic invariant `f(0) == f(1) == 1.0` — the seam-click bug class.
 fn curve_shapes() -> [CurveTable; 3] {
-    [
-        // Pump: brief hold at silence, then a power-curve recovery across
-        // the whole cycle — the classic sidechain feel.
-        CurveTable::from_fn(|phase| ((phase - 0.02) / 0.98).clamp(0.0, 1.0).powf(0.6)),
-        // Punch: full dip, fully recovered by 35% of the cycle.
-        CurveTable::from_fn(|phase| (phase / 0.35).clamp(0.0, 1.0).powf(0.8)),
-        // Soft: raised cosine, gentle the whole way.
-        CurveTable::from_fn(|phase| {
-            0.5 - 0.5 * (core::f32::consts::PI * phase.clamp(0.0, 1.0)).cos()
-        }),
-    ]
+    [duck::pump(), duck::punch(), duck::soft()]
 }
 
 impl Plugin for Patada {
     const ID: &'static str = "dev.seco.patada";
     const NAME: &'static str = "patada";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.3.0";
+    const VERSION: &'static str = "0.3.1";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[

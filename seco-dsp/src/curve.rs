@@ -24,6 +24,14 @@ impl CurveTable {
         Self { table }
     }
 
+    /// Magnitude of the wrap discontinuity: `|f(0) − f(1)|` of the sampled
+    /// shape. A curve used cyclically must keep this at ~0, or the gain
+    /// steps once per cycle — an audible click. (`lookup` cannot measure
+    /// this: it wraps phase 1.0 back to 0.0.)
+    pub fn seam_step(&self) -> f32 {
+        (self.table[0] - self.table[RESOLUTION]).abs()
+    }
+
     /// Linearly interpolated gain at `phase`. Any real input is accepted:
     /// the phase is wrapped into `[0, 1)` (negative values wrap upward, as
     /// a cyclic position should).

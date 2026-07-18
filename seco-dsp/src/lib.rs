@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 
 mod curve;
+pub mod duck;
 mod smooth;
 
 pub use curve::CurveTable;

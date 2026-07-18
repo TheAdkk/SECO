@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "seco-clap",
  "seco-core",
+ "seco-dsp",
 ]
 
 [[package]]
@@ -19,4 +20,8 @@ dependencies = [
 
 [[package]]
 name = "seco-core"
+version = "0.1.0"
+
+[[package]]
+name = "seco-dsp"
 version = "0.1.0"

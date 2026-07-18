@@ -8,11 +8,13 @@
 #![warn(missing_docs)]
 
 mod buffer;
+mod param;
 mod plugin;
 mod rt;
 mod transport;
 
 pub use buffer::AudioBuffer;
+pub use param::{ParamDesc, ParamRange};
 pub use plugin::Plugin;
 pub use rt::RtContext;
 pub use transport::Transport;
@@ -24,5 +26,7 @@ pub use transport::Transport;
 /// for what breaks if you climb over it.
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(debug_assertions)]
+    pub use crate::rt::rt_depth;
     pub use crate::rt::with_rt_context;
 }

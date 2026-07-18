@@ -1,4 +1,4 @@
-use crate::{AudioBuffer, RtContext};
+use crate::{AudioBuffer, ParamDesc, RtContext};
 
 /// A SECO audio plugin.
 ///
@@ -21,6 +21,10 @@ pub trait Plugin: Send + 'static {
     const VERSION: &'static str;
     /// One-line description. May be empty.
     const DESCRIPTION: &'static str = "";
+    /// The plugin's parameters. A parameter's identifier is its index here,
+    /// so treat the slice as append-only (see [`ParamDesc`]). Current values
+    /// arrive in `process()` via [`RtContext::param`].
+    const PARAMS: &'static [ParamDesc] = &[];
 
     /// Creates an instance. Runs on the main thread; allocation is fine here.
     fn new() -> Self;

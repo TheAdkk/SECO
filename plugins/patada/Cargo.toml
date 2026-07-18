@@ -7,7 +7,16 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# VST3 export via free-audio's clap-wrapper (C++, embedded VST3 SDK — MIT),
+# built by the `clap-wrapper` crate with cc, no cmake. Off by default: the
+# plain build ships CLAP only, and seco-core/seco-clap know nothing of this.
+vst3 = ["dep:clap-wrapper"]
+
 [dependencies]
 seco-core = { path = "../../seco-core" }
 seco-clap = { path = "../../seco-clap" }
 seco-dsp = { path = "../../seco-dsp" }
+clap-wrapper = { version = "0.3.1", default-features = false, features = [
+    "vst3",
+], optional = true }

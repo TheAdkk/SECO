@@ -177,6 +177,13 @@ impl Plugin for Patada {
 
 seco_export!(Patada);
 
+// VST3 export: free-audio's clap-wrapper (C++ inside) re-hosts the
+// `clap_entry` this same library exports and presents it as a VST3. SECO's
+// core stays pure Rust; this format adapter is borrowed, and only exists
+// when the `vst3` feature is on.
+#[cfg(feature = "vst3")]
+clap_wrapper::export_vst3!();
+
 #[cfg(test)]
 mod tests {
     use seco_core::Transport;

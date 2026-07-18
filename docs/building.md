@@ -44,6 +44,22 @@ cargo build -p patada --release
 copy target\release\patada.dll "%LOCALAPPDATA%\Programs\Common\CLAP\patada.clap"
 ```
 
+## VST3 (for hosts without CLAP support, e.g. Ableton Live)
+
+The `vst3` cargo feature (off by default) wraps the CLAP plugin as a VST3
+via free-audio's clap-wrapper — C++ inside, embedded MIT-licensed VST 3 SDK;
+see the README's "Formats, honestly" section. Neither seco-core nor
+seco-clap participate: the wrapper re-hosts the `clap_entry` the plugin
+already exports.
+
+```sh
+./scripts/bundle-macos.sh vst3      # → target/patada.vst3
+cp -R target/patada.vst3 ~/Library/Audio/Plug-Ins/VST3/
+```
+
+Validate headless with [pluginval](https://github.com/Tracktion/pluginval):
+`pluginval --strictness-level 10 --validate target/patada.vst3`.
+
 ## Verifying without a DAW
 
 [clap-validator](https://github.com/free-audio/clap-validator) (by the CLAP

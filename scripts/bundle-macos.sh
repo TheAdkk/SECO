@@ -7,14 +7,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PROFILE="${1:-release}"
-case "$PROFILE" in
-  release) cargo build -p patada --release ;;
-  debug)   cargo build -p patada ;;
-  *) echo "usage: $0 [release|debug]" >&2; exit 1 ;;
+MODE="${1:-release}"
+case "$MODE" in
+  release) cargo build -p patada --release; PROFILE=release; EXT=clap ;;
+  debug)   cargo build -p patada;           PROFILE=debug;   EXT=clap ;;
+  # VST3 via clap-wrapper (C++ inside, embedded MIT VST3 SDK): the same
+  # dylib carries clap_entry plus the VST3 entry points; only the bundle
+  # extension tells hosts which face to load. Debug profile: keeps the
+  # transport trace during the verification phase.
+  vst3)    cargo build -p patada --features vst3; PROFILE=debug; EXT=vst3 ;;
+  *) echo "usage: $0 [release|debug|vst3]" >&2; exit 1 ;;
 esac
 
-BUNDLE="target/patada.clap"
+BUNDLE="target/patada.$EXT"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
 cp "target/$PROFILE/libpatada.dylib" "$BUNDLE/Contents/MacOS/patada"
@@ -43,4 +48,8 @@ EOF
 codesign --force --sign - "$BUNDLE"
 
 echo "Built $BUNDLE"
-echo "Install with: cp -R $BUNDLE ~/Library/Audio/Plug-Ins/CLAP/"
+if [ "$EXT" = "vst3" ]; then
+  echo "Install with: cp -R $BUNDLE ~/Library/Audio/Plug-Ins/VST3/"
+else
+  echo "Install with: cp -R $BUNDLE ~/Library/Audio/Plug-Ins/CLAP/"
+fi

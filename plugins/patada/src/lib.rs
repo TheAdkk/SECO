@@ -36,6 +36,12 @@ struct Patada {
     /// ppq when stopped (§11.2), and patada keeps ducking free-run.
     phase: f64,
     smoother: OnePole,
+    /// True until the first processed sample after new/activate/reset: the
+    /// smoother then snaps onto the curve's actual value at the starting
+    /// phase instead of gliding down from an arbitrary 1.0 (which was an
+    /// audible first-cycle overshoot on slow-attack curves). Only initial
+    /// state snaps — transport jumps keep their glide.
+    needs_snap: bool,
     curves: [CurveTable; 3],
     /// Per-block gain, computed once and applied to every channel.
     /// Allocated in `activate` (where `max_frames` is known); `process`
@@ -53,7 +59,7 @@ impl Plugin for Patada {
     const ID: &'static str = "dev.seco.patada";
     const NAME: &'static str = "patada";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.3.1";
+    const VERSION: &'static str = "0.3.2";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[
@@ -80,6 +86,7 @@ impl Plugin for Patada {
             sample_rate: 48_000.0,
             phase: 0.0,
             smoother: OnePole::new(1.0),
+            needs_snap: true,
             curves: curve_shapes(),
             gain: Vec::new(),
         }
@@ -90,11 +97,12 @@ impl Plugin for Patada {
         self.smoother.set_tau(SMOOTH_TAU_SECONDS, sample_rate as f32);
         self.gain.clear();
         self.gain.resize(max_frames as usize, 1.0);
+        self.needs_snap = true;
     }
 
     fn reset(&mut self) {
         self.phase = 0.0;
-        self.smoother.snap_to(1.0);
+        self.needs_snap = true;
     }
 
     fn process(&mut self, audio: &mut AudioBuffer, rt: &RtContext) {
@@ -126,6 +134,19 @@ impl Plugin for Patada {
         let n = frames.min(self.gain.len());
         debug_assert!(n == frames, "host sent more frames than activate() promised");
 
+        if self.needs_snap {
+            // Order matters: the phase above is already resynced for this
+            // block, so this is the exact target of the first sample. Start
+            // *on* the curve, not above it.
+            let first_target = if bypass {
+                1.0
+            } else {
+                1.0 + (curve.lookup(self.phase as f32) - 1.0) * mix
+            };
+            self.smoother.snap_to(first_target);
+            self.needs_snap = false;
+        }
+
         for slot in &mut self.gain[..n] {
             let target = if bypass {
                 // Bypass stays inside process() (CLAP requires the host to
@@ -150,3 +171,85 @@ impl Plugin for Patada {
 }
 
 seco_export!(Patada);
+
+#[cfg(test)]
+mod tests {
+    use seco_core::Transport;
+    use seco_core::__private::with_rt_context;
+    use seco_dsp::duck;
+
+    use super::*;
+
+    /// rate = 1/4 (cycle 1 beat), mix = 1, curve = Soft, bypass off. Soft's
+    /// slow attack is what made the start-up overshoot audible.
+    const PARAMS_SOFT: [f64; 4] = [2.0, 1.0, 2.0, 0.0];
+
+    fn transport_at(ppq: f64) -> Transport {
+        Transport {
+            tempo_bpm: Some(120.0),
+            song_pos_beats: Some(ppq),
+            song_pos_seconds: None,
+            time_signature: None,
+            playing: true,
+        }
+    }
+
+    /// Feeds a block of all-ones, so the output IS the gain signal. Buffers
+    /// are allocated out here: inside the runner the armed allocation
+    /// detector (registered by `seco_export!` above) aborts the test binary,
+    /// so these tests also pin `process()` as allocation-free.
+    fn run_block(plugin: &mut Patada, ppq: f64, frames: usize) -> Vec<f32> {
+        let mut left = vec![1.0_f32; frames];
+        let mut right = vec![1.0_f32; frames];
+        with_rt_context(transport_at(ppq), &PARAMS_SOFT, |rt| {
+            let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+            let mut audio = AudioBuffer::new(&mut channels);
+            plugin.process(&mut audio, rt);
+        });
+        left
+    }
+
+    /// The start-up invariant that shipped untested: after new/activate/
+    /// reset, the very first sample must sit ON the curve at the starting
+    /// phase — not glide down from an arbitrary 1.0.
+    #[test]
+    fn first_sample_starts_on_the_curve_not_at_unity() {
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        plugin.reset();
+
+        // ppq 10.25, cycle 1 beat → phase 0.25, well inside Soft's dip.
+        let out = run_block(&mut plugin, 10.25, 64);
+
+        let expected = duck::soft().lookup(0.25);
+        assert!(expected < 0.2, "test premise: Soft at phase 0.25 must duck deep");
+        assert!(
+            (out[0] - expected).abs() < 1e-4,
+            "first sample {} must sit on the curve ({expected}), not near 1.0",
+            out[0]
+        );
+    }
+
+    /// The snap is initial-state only. A transport jump (loop wrap, seek)
+    /// must keep the smoother's glide — snapping there would reintroduce
+    /// the seam click as a resync click.
+    #[test]
+    fn transport_jump_glides_snap_only_on_start() {
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        plugin.reset();
+
+        let first = run_block(&mut plugin, 10.25, 64);
+        // Jump far away on the curve (phase 0.25 → 0.6, gain ~0.1 → ~0.6).
+        let second = run_block(&mut plugin, 20.6, 64);
+
+        let jump_target = duck::soft().lookup(0.6);
+        assert!(jump_target > 0.5, "test premise: jump lands on a high-gain phase");
+        let boundary_step = (second[0] - first[63]).abs();
+        assert!(
+            boundary_step < 0.02,
+            "jump must glide from {} (stepped {boundary_step} toward {jump_target})",
+            first[63]
+        );
+    }
+}

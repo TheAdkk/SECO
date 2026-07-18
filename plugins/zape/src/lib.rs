@@ -1,4 +1,4 @@
-//! patada — tempo-synced ducking.
+//! Zape — tempo-synced ducking.
 //!
 //! Not a compressor: no signal analysis, no sidechain input. The audio is
 //! multiplied by a gain curve indexed by the host's beat position — a
@@ -30,10 +30,10 @@ const SMOOTH_TAU_SECONDS: f32 = 0.002;
 /// Free-run tempo when the host provides none.
 const FALLBACK_BPM: f64 = 120.0;
 
-struct Patada {
+struct Zape {
     sample_rate: f64,
     /// Cycle phase in `[0, 1)`. Kept across transport stops: hosts freeze
-    /// ppq when stopped (§11.2), and patada keeps ducking free-run.
+    /// ppq when stopped (§11.2), and zape keeps ducking free-run.
     phase: f64,
     smoother: OnePole,
     /// True until the first processed sample after new/activate/reset: the
@@ -55,11 +55,11 @@ fn curve_shapes() -> [CurveTable; 3] {
     [duck::pump(), duck::punch(), duck::soft()]
 }
 
-impl Plugin for Patada {
-    const ID: &'static str = "dev.seco.patada";
-    const NAME: &'static str = "patada";
+impl Plugin for Zape {
+    const ID: &'static str = "dev.seco.zape";
+    const NAME: &'static str = "Zape";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.3.4";
+    const VERSION: &'static str = "0.4.0";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[
@@ -82,7 +82,7 @@ impl Plugin for Patada {
     ];
 
     fn new() -> Self {
-        Patada {
+        Zape {
             sample_rate: 48_000.0,
             phase: 0.0,
             smoother: OnePole::new(1.0),
@@ -175,7 +175,7 @@ impl Plugin for Patada {
     }
 }
 
-seco_export!(Patada);
+seco_export!(Zape);
 
 // VST3 export: free-audio's clap-wrapper (C++ inside) re-hosts the
 // `clap_entry` this same library exports and presents it as a VST3. SECO's
@@ -210,7 +210,7 @@ mod tests {
     /// are allocated out here: inside the runner the armed allocation
     /// detector (registered by `seco_export!` above) aborts the test binary,
     /// so these tests also pin `process()` as allocation-free.
-    fn run_block_with(plugin: &mut Patada, params: &[f64; 4], ppq: f64, frames: usize) -> Vec<f32> {
+    fn run_block_with(plugin: &mut Zape, params: &[f64; 4], ppq: f64, frames: usize) -> Vec<f32> {
         let mut left = vec![1.0_f32; frames];
         let mut right = vec![1.0_f32; frames];
         with_rt_context(transport_at(ppq), params, |rt| {
@@ -221,7 +221,7 @@ mod tests {
         left
     }
 
-    fn run_block(plugin: &mut Patada, ppq: f64, frames: usize) -> Vec<f32> {
+    fn run_block(plugin: &mut Zape, ppq: f64, frames: usize) -> Vec<f32> {
         run_block_with(plugin, &PARAMS_SOFT, ppq, frames)
     }
 
@@ -230,7 +230,7 @@ mod tests {
     /// the ppq where it happened. `prev` carries continuity across calls so
     /// scenarios can measure steps across reset()/jump boundaries too.
     fn max_gain_step(
-        plugin: &mut Patada,
+        plugin: &mut Zape,
         params: &[f64; 4],
         start_ppq: f64,
         blocks: usize,
@@ -259,7 +259,7 @@ mod tests {
 
     /// Diagnostic, not a pass/fail gate: prints the worst per-sample gain
     /// step per scenario. Run with:
-    /// `cargo test -p patada -- --ignored --nocapture click_scan`
+    /// `cargo test -p zape -- --ignored --nocapture click_scan`
     #[test]
     #[ignore = "diagnostic: run explicitly with --ignored --nocapture"]
     fn click_scan_diagnostic() {
@@ -268,7 +268,7 @@ mod tests {
         println!("--- steady playback, 8 cycles ---");
         for (cname, c) in curves {
             for (rname, r, cycle_beats) in rates {
-                let mut plugin = Patada::new();
+                let mut plugin = Zape::new();
                 plugin.activate(48_000.0, 512);
                 let params = [r, 1.0, c, 0.0];
                 let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
@@ -279,7 +279,7 @@ mod tests {
             }
         }
         println!("--- transport jump while playing (glide expected) ---");
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         let params = [2.0, 1.0, 2.0, 0.0];
         let mut prev = None;
@@ -287,7 +287,7 @@ mod tests {
         let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
         println!("soft jump 0.25->0.6: max |dG| = {step:.5}");
         println!("--- reset() mid-stream + transport jump (flush-on-jump hosts) ---");
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         let mut prev = None;
         max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
@@ -295,7 +295,7 @@ mod tests {
         let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
         println!("soft reset+jump 0.25->0.6: max |dG| = {step:.5}");
         println!("--- reset() mid-stream, continuous transport ---");
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         let mut prev = None;
         max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
@@ -312,7 +312,7 @@ mod tests {
     fn steady_playback_never_steps_the_gain() {
         for curve in [0.0_f64, 1.0, 2.0] {
             for (rate, cycle_beats) in [(2.0_f64, 1.0_f64), (4.0, 0.25)] {
-                let mut plugin = Patada::new();
+                let mut plugin = Zape::new();
                 plugin.activate(48_000.0, 512);
                 let params = [rate, 1.0, curve, 0.0];
                 let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
@@ -331,7 +331,7 @@ mod tests {
     /// click (measured 0.424 before the fix).
     #[test]
     fn reset_plus_jump_glides_instead_of_clicking() {
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         let params = [2.0, 1.0, 2.0, 0.0];
         let mut prev = None;
@@ -346,7 +346,7 @@ mod tests {
     /// phase — not glide down from an arbitrary 1.0.
     #[test]
     fn first_sample_starts_on_the_curve_not_at_unity() {
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         plugin.reset();
 
@@ -367,7 +367,7 @@ mod tests {
     /// the seam click as a resync click.
     #[test]
     fn transport_jump_glides_snap_only_on_start() {
-        let mut plugin = Patada::new();
+        let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
         plugin.reset();
 

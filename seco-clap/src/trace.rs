@@ -3,7 +3,7 @@
 //!
 //! The audio thread only does relaxed atomic stores into [`TransportTrace`];
 //! a background thread started at instance creation samples the atomics
-//! every 250 ms and appends changed snapshots to `/tmp/patada-transport.log`.
+//! every 250 ms and appends changed snapshots to `/tmp/zape-transport.log`.
 //! Compiled only into debug builds; release builds carry none of this.
 
 use std::fs::OpenOptions;
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::ffi::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR, ClapEventTransport, ClapProcess};
 
-const LOG_PATH: &str = "/tmp/patada-transport.log";
+const LOG_PATH: &str = "/tmp/zape-transport.log";
 const SAMPLE_EVERY: Duration = Duration::from_millis(250);
 
 /// One relaxed-atomic slot per transport fact worth observing. Written by

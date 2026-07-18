@@ -1,6 +1,6 @@
 # SECO
 
-A minimal audio plugin framework in pure Rust, and **patada**, a tempo-synced
+A minimal audio plugin framework in pure Rust, and **Zape**, a tempo-synced
 ducking plugin built on it.
 
 The name is a joke: JUCE sounds like "juice" (wet signal). This is SECO (dry).
@@ -17,7 +17,7 @@ Backronym: *Sistema Extensible de Componentes de audiO*.
   `unsafe`.
 - `seco-dsp` — allocation-free DSP utilities (one-pole smoother, curve
   tables), pure and unit-tested.
-- `plugins/patada` — the plugin. Multiplies audio by a gain curve indexed by
+- `plugins/zape` — the plugin. Multiplies audio by a gain curve indexed by
   the host's beat position. No sidechain input, no signal analysis. Zero
   `unsafe`.
 

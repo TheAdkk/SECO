@@ -12,7 +12,7 @@ All `file:line` citations refer to `reference/clap/include/clap/` at that commit
 
 ## 1. Transport: how the host exposes musical position and tempo
 
-This is the heart of `patada`, so it gets the most detail.
+This is the heart of `zape`, so it gets the most detail.
 
 ### 1.1 Two delivery paths
 
@@ -34,7 +34,7 @@ Critical null case (`process.h:43-44`):
 > ```
 
 So `transport == NULL` is legal and means: no tempo, no position, ever. This is
-the "host without timeline" edge case — `patada` must free-run on an internal
+the "host without timeline" edge case — `zape` must free-run on an internal
 phase accumulator at an assumed tempo.
 
 ### 1.2 Fixed-point time types (`fixedpoint.h`)
@@ -113,7 +113,7 @@ Caveat on the "Valid when" column: the header only *names* the flags
 `HAS_TIME_SIGNATURE`); it does not spell out a field→flag table. The mapping
 above is the only sensible reading (each `HAS_*` flag gates the fields in its
 domain), but the loop/bar rows are interpretation, not quoted spec. The four
-rows that matter for `patada` (`song_pos_beats`, `tempo`) are unambiguous.
+rows that matter for `zape` (`song_pos_beats`, `tempo`) are unambiguous.
 
 ### 1.4 Transport flags (`events.h:263-272`)
 
@@ -140,7 +140,7 @@ The header says only "position in beats" / tempo "in bpm". It does **not**
 define whether a beat is a quarter note or the time-signature denominator unit.
 
 **Empirically resolved (Phase 2, 2026-07): a beat is a quarter note.**
-Observed via patada's transport trace log:
+Observed via zape's transport trace log:
 
 - REAPER 7.77 (macOS), 4/4 at 120 BPM: `song_pos_beats` advances at exactly
   2.000/s (= 120/60), matching `song_pos_seconds` sample-for-sample
@@ -153,7 +153,7 @@ A 6/8 discriminator run was unnecessary — the 4/4 rate + bar length already
 pin the unit. Caveat: verified in REAPER (plus clap-validator); a second real
 DAW (Bitwig) has not cross-checked this yet.
 
-### 1.6 Implications for `patada`'s edge cases
+### 1.6 Implications for `zape`'s edge cases
 
 - **No transport at all:** `process->transport == NULL` → free-run: internal
   phase accumulator, assume 120 BPM.
@@ -224,7 +224,7 @@ docs suggest.
   `id` (reverse-URI, mandatory), `name` (mandatory), `vendor`, `url`,
   `manual_url`, `support_url`, `version`, `description`, and a
   NULL-terminated `const char *const *features` array. Standard feature
-  strings in `plugin-features.h` — for `patada`: `"audio-effect"`,
+  strings in `plugin-features.h` — for `zape`: `"audio-effect"`,
   `"stereo"` (`plugin-features.h:19,77`).
 - `clap_plugin_t` (`plugin.h:41-110`): `desc`, `plugin_data` (our instance
   pointer), then:
@@ -249,7 +249,7 @@ docs suggest.
 
 - Return type `clap_process_status` (`int32_t`), values (`process.h:10-27`):
   `CLAP_PROCESS_ERROR = 0`, `CONTINUE = 1`, `CONTINUE_IF_NOT_QUIET = 2`,
-  `TAIL = 3`, `SLEEP = 4`. `patada` v1 returns `CONTINUE` (it must keep
+  `TAIL = 3`, `SLEEP = 4`. `zape` v1 returns `CONTINUE` (it must keep
   running even on silence — the duck curve is time-driven, and bypass must not
   stop processing per `params.h:153-155`).
 - `clap_process_t` fields (`process.h:30-62`): `steady_time` (§1.6),
@@ -287,7 +287,7 @@ docs suggest.
 - `clap_audio_port_info_t` (`:42-65`): stable `id`, `name[CLAP_NAME_SIZE]`,
   `flags`, `channel_count`, `port_type` (compare against
   `CLAP_PORT_STEREO = "stereo"`, `:18`), `in_place_pair`.
-- `patada`: 1 in + 1 out, stereo, `CLAP_AUDIO_PORT_IS_MAIN` (`:28` — main
+- `zape`: 1 in + 1 out, stereo, `CLAP_AUDIO_PORT_IS_MAIN` (`:28` — main
   port must be index 0), `in_place_pair` set to the paired id (we process
   in-place safely) — or `CLAP_INVALID_ID` (`id.h:8` = `UINT32_MAX`) to start.
 - Port config may only change while deactivated (`:14`, `:67`).
@@ -319,7 +319,7 @@ docs suggest.
   (optional fast-path pointer; host may echo it or pass NULL — must handle
   NULL, `:234-241`), `name[CLAP_NAME_SIZE]`, `module[CLAP_PATH_SIZE]`,
   `min_value` / `max_value` / `default_value` (plain values, finite).
-- Flags for `patada`'s four params (`:133-207`):
+- Flags for `zape`'s four params (`:133-207`):
   - `rate`: `IS_STEPPED | IS_ENUM | IS_AUTOMATABLE` (`IS_ENUM` requires
     `IS_STEPPED`, `:203-206`; every value needs non-blank `value_to_text`).
   - `mix`: `IS_AUTOMATABLE`.
@@ -332,7 +332,7 @@ docs suggest.
   param_value + param_mod" (`:100-107`) — no `PARAM_MOD` support in v1 means
   we simply don't set `IS_MODULATABLE`.
 - **Persistence rule** (`:101-107`): hosts should NOT save parameter values
-  for plugins lacking the state extension. So `patada` needs `ext/state` no
+  for plugins lacking the state extension. So `zape` needs `ext/state` no
   later than Phase 3, or projects won't recall settings.
 
 ## 8. State extension (`ext/state.h`, `stream.h`)
@@ -381,13 +381,13 @@ docs suggest.
   fixed-size char arrays inside `clap_param_info` / `clap_audio_port_info`.
 - `clap_version_is_compatible(v)` ⇔ `v.major >= 1` (`version.h:38-42`).
 
-## 11. Phase 2 empirical results (REAPER 7.77, macOS; log: patada trace)
+## 11. Phase 2 empirical results (REAPER 7.77, macOS; log: zape trace)
 
 1. **Beat unit: quarter note.** Answered — see §1.5.
 2. **Stopped transport (REAPER):** `IS_PLAYING` clears but every `HAS_*`
    flag stays set and `song_pos_beats` **freezes** at the stop position
    (observed `flags 0b00011111 → 0b00001111`, ppq pinned at 108.0). The
-   free-run internal accumulator is therefore mandatory for `patada`, not a
+   free-run internal accumulator is therefore mandatory for `zape`, not a
    nice-to-have.
 3. **Mid-block transport events:** none observed — `tp_events=0` across
    every REAPER and clap-validator run. `tempo_inc` behavior under tempo

@@ -11,7 +11,7 @@ use crate::{AudioBuffer, ParamDesc, RtContext};
 /// `Sync` is *not* required: hosts guarantee an instance is never entered
 /// from two threads at once.
 pub trait Plugin: Send + 'static {
-    /// Unique, stable identifier, reverse-URI style (e.g. `"dev.seco.patada"`).
+    /// Unique, stable identifier, reverse-URI style (e.g. `"dev.seco.zape"`).
     const ID: &'static str;
     /// Display name.
     const NAME: &'static str;

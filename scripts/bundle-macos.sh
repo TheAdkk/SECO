@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds patada and assembles the macOS .clap bundle.
+# Builds zape and assembles the macOS .clap bundle.
 #
 # CLAP on macOS is a *bundle* (a directory), not a bare dylib — hosts scan
 # for bundles, and a renamed .dylib file will not be picked up. See
@@ -9,37 +9,37 @@ cd "$(dirname "$0")/.."
 
 MODE="${1:-release}"
 case "$MODE" in
-  release) cargo build -p patada --release; PROFILE=release; EXT=clap ;;
-  debug)   cargo build -p patada;           PROFILE=debug;   EXT=clap ;;
+  release) cargo build -p zape --release; PROFILE=release; EXT=clap ;;
+  debug)   cargo build -p zape;           PROFILE=debug;   EXT=clap ;;
   # VST3 via clap-wrapper (C++ inside, embedded MIT VST3 SDK): the same
   # dylib carries clap_entry plus the VST3 entry points; only the bundle
   # extension tells hosts which face to load. Debug profile: keeps the
   # transport trace during the verification phase.
-  vst3)    cargo build -p patada --features vst3; PROFILE=debug; EXT=vst3 ;;
+  vst3)    cargo build -p zape --features vst3; PROFILE=debug; EXT=vst3 ;;
   *) echo "usage: $0 [release|debug|vst3]" >&2; exit 1 ;;
 esac
 
-BUNDLE="target/patada.$EXT"
+BUNDLE="target/zape.$EXT"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
-cp "target/$PROFILE/libpatada.dylib" "$BUNDLE/Contents/MacOS/patada"
+cp "target/$PROFILE/libzape.dylib" "$BUNDLE/Contents/MacOS/zape"
 cat > "$BUNDLE/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>patada</string>
+	<string>zape</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.seco.patada</string>
+	<string>dev.seco.zape</string>
 	<key>CFBundleName</key>
-	<string>patada</string>
+	<string>Zape</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.4.0</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.0</string>
+	<string>0.4.0</string>
 </dict>
 </plist>
 EOF

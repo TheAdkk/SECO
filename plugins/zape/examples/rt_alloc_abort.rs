@@ -1,6 +1,6 @@
 //! Manual proof that the RT allocation detector is armed.
 //!
-//! Run `cargo run -p patada --example rt_alloc_abort` in a DEBUG build: it
+//! Run `cargo run -p zape --example rt_alloc_abort` in a DEBUG build: it
 //! must print `seco: heap allocation inside the real-time audio callback`
 //! and abort (the allocation happens inside a real-time scope). In release
 //! builds the detector compiles away and this exits normally — which is the
@@ -8,7 +8,7 @@
 //!
 //! This crosses the `__private` fence deliberately: it IS a runner harness.
 
-// The example binary does not link the patada cdylib (it never names it), so
+// The example binary does not link the zape cdylib (it never names it), so
 // `seco_export!`'s registration inside the plugin does not apply here; the
 // harness registers the detector itself, exactly like the macro does.
 #[global_allocator]

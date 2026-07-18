@@ -1,0 +1,8 @@
+[package]
+name = "seco-clap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+seco-core = { path = "../seco-core" }

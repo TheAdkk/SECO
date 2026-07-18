@@ -1,0 +1,8 @@
+[package]
+name = "seco-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# None, by design: seco-core is pure trait/type definitions.

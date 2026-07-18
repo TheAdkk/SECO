@@ -56,6 +56,14 @@ clap-validator validate target/patada.clap
 
 ## Verifying in a DAW
 
-Rescan plugins (Bitwig: Settings → Locations → rescan; REAPER: Options →
-Preferences → Plug-ins → Re-scan). Insert **patada** on a track: the output
-should drop by 6 dB, nothing else.
+The development host is **REAPER** (native CLAP support since v7). It scans
+the standard macOS location above (`~/Library/Audio/Plug-Ins/CLAP`); after
+installing a new build: Options → Preferences → Plug-ins → Re-scan. Insert
+**patada** on a track: the output should drop by 6 dB, nothing else.
+
+Ableton Live does not support CLAP (as of 2026), which is why it is not the
+development host. The planned route into Live is the VST3 wrapper phase; the
+CLAP binary stays the single source.
+
+Bitwig (demo) serves as a second host when cross-checking behavior
+(Settings → Locations → rescan).

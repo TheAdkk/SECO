@@ -25,6 +25,11 @@ pub(crate) struct TransportTrace {
     pub(crate) blocks: AtomicU64,
     /// Mid-block `CLAP_EVENT_TRANSPORT` events seen in `in_events`.
     pub(crate) transport_events: AtomicU64,
+    /// Host lifecycle calls — how often the host re-activates, resets, or
+    /// restarts processing. Diagnoses flush-on-transport-change behavior.
+    pub(crate) activations: AtomicU64,
+    pub(crate) resets: AtomicU64,
+    pub(crate) processing_starts: AtomicU64,
     has_transport: AtomicBool,
     flags: AtomicU32,
     tempo_bits: AtomicU64,
@@ -63,12 +68,16 @@ impl TransportTrace {
         let tsig = self.tsig.load(Relaxed);
         format!(
             "host={host} pid={pid} blocks={blocks} tp_events={tp_events} \
+             act={act} rst={rst} strt={strt} \
              has_tp={has_tp} flags={flags:#010b} tempo={tempo:.6} ppq={ppq:.6} \
              sec={sec:.6} bar_start={bar_start:.6} bar#={bar} tsig={num}/{den} \
              steady={steady}",
             pid = std::process::id(),
             blocks = self.blocks.load(Relaxed),
             tp_events = self.transport_events.load(Relaxed),
+            act = self.activations.load(Relaxed),
+            rst = self.resets.load(Relaxed),
+            strt = self.processing_starts.load(Relaxed),
             has_tp = self.has_transport.load(Relaxed),
             flags = self.flags.load(Relaxed),
             tempo = f64::from_bits(self.tempo_bits.load(Relaxed)),

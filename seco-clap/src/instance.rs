@@ -107,7 +107,7 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
             destroy: plugin_destroy::<P>,
             activate: plugin_activate::<P>,
             deactivate: plugin_deactivate::<P>,
-            start_processing: plugin_start_processing,
+            start_processing: plugin_start_processing::<P>,
             stop_processing: plugin_stop_processing,
             reset: plugin_reset::<P>,
             process: plugin_process::<P>,
@@ -252,6 +252,8 @@ unsafe extern "C" fn plugin_activate<P: Plugin>(
 ) -> bool {
     // SAFETY: live instance per `shared`'s contract.
     let inst = unsafe { shared::<P>(plugin) };
+    #[cfg(debug_assertions)]
+    inst.trace.activations.fetch_add(1, Relaxed);
     // SAFETY: `[main-thread & !active]` — the plugin is not processing and
     // no other lifecycle call runs concurrently, so state access is exclusive.
     let state = unsafe { &mut *inst.state.get() };
@@ -270,7 +272,15 @@ unsafe extern "C" fn plugin_deactivate<P: Plugin>(plugin: *const ClapPlugin) {
 }
 
 /// `plugin.h:75-78` `[audio-thread & active & !processing]`.
-unsafe extern "C" fn plugin_start_processing(_plugin: *const ClapPlugin) -> bool {
+unsafe extern "C" fn plugin_start_processing<P: Plugin>(plugin: *const ClapPlugin) -> bool {
+    #[cfg(debug_assertions)]
+    if !plugin.is_null() {
+        // SAFETY: live instance per `shared`'s contract; atomics only.
+        let inst = unsafe { shared::<P>(plugin) };
+        inst.trace.processing_starts.fetch_add(1, Relaxed);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = plugin;
     true
 }
 
@@ -281,6 +291,8 @@ unsafe extern "C" fn plugin_stop_processing(_plugin: *const ClapPlugin) {}
 unsafe extern "C" fn plugin_reset<P: Plugin>(plugin: *const ClapPlugin) {
     // SAFETY: live instance per `shared`'s contract.
     let inst = unsafe { shared::<P>(plugin) };
+    #[cfg(debug_assertions)]
+    inst.trace.resets.fetch_add(1, Relaxed);
     // SAFETY: `[audio-thread]` — at most one audio thread exists per
     // instance (thread-check.h:30-40), so state access is exclusive.
     let state = unsafe { &mut *inst.state.get() };

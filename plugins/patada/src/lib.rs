@@ -59,7 +59,7 @@ impl Plugin for Patada {
     const ID: &'static str = "dev.seco.patada";
     const NAME: &'static str = "patada";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.3.2";
+    const VERSION: &'static str = "0.3.3";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[
@@ -102,7 +102,12 @@ impl Plugin for Patada {
 
     fn reset(&mut self) {
         self.phase = 0.0;
-        self.needs_snap = true;
+        // Deliberately NOT arming the snap: reset() can happen mid-stream
+        // (hosts that flush FX around transport changes), where snapping to
+        // the new phase's curve value is a one-sample gain step — a click
+        // (measured 0.424). The smoother keeps its value and glides; the
+        // snap belongs only to fresh streams (new/activate), where there is
+        // no prior output to click against.
     }
 
     fn process(&mut self, audio: &mut AudioBuffer, rt: &RtContext) {
@@ -198,15 +203,135 @@ mod tests {
     /// are allocated out here: inside the runner the armed allocation
     /// detector (registered by `seco_export!` above) aborts the test binary,
     /// so these tests also pin `process()` as allocation-free.
-    fn run_block(plugin: &mut Patada, ppq: f64, frames: usize) -> Vec<f32> {
+    fn run_block_with(plugin: &mut Patada, params: &[f64; 4], ppq: f64, frames: usize) -> Vec<f32> {
         let mut left = vec![1.0_f32; frames];
         let mut right = vec![1.0_f32; frames];
-        with_rt_context(transport_at(ppq), &PARAMS_SOFT, |rt| {
+        with_rt_context(transport_at(ppq), params, |rt| {
             let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
             let mut audio = AudioBuffer::new(&mut channels);
             plugin.process(&mut audio, rt);
         });
         left
+    }
+
+    fn run_block(plugin: &mut Patada, ppq: f64, frames: usize) -> Vec<f32> {
+        run_block_with(plugin, &PARAMS_SOFT, ppq, frames)
+    }
+
+    /// Streams `blocks` host-realistic blocks (advancing ppq like a DAW at
+    /// 120 BPM / 48 kHz) and returns the largest per-sample gain step and
+    /// the ppq where it happened. `prev` carries continuity across calls so
+    /// scenarios can measure steps across reset()/jump boundaries too.
+    fn max_gain_step(
+        plugin: &mut Patada,
+        params: &[f64; 4],
+        start_ppq: f64,
+        blocks: usize,
+        prev: &mut Option<f32>,
+    ) -> (f32, f64) {
+        const BLOCK: usize = 512;
+        let beats_per_sample = 120.0 / 60.0 / 48_000.0;
+        let mut ppq = start_ppq;
+        let (mut max_step, mut max_at) = (0.0_f32, 0.0_f64);
+        for _ in 0..blocks {
+            let gains = run_block_with(plugin, params, ppq, BLOCK);
+            for (i, gain) in gains.iter().enumerate() {
+                if let Some(previous) = *prev {
+                    let step = (gain - previous).abs();
+                    if step > max_step {
+                        max_step = step;
+                        max_at = ppq + i as f64 * beats_per_sample;
+                    }
+                }
+                *prev = Some(*gain);
+            }
+            ppq += BLOCK as f64 * beats_per_sample;
+        }
+        (max_step, max_at)
+    }
+
+    /// Diagnostic, not a pass/fail gate: prints the worst per-sample gain
+    /// step per scenario. Run with:
+    /// `cargo test -p patada -- --ignored --nocapture click_scan`
+    #[test]
+    #[ignore = "diagnostic: run explicitly with --ignored --nocapture"]
+    fn click_scan_diagnostic() {
+        let curves: [(&str, f64); 3] = [("pump", 0.0), ("punch", 1.0), ("soft", 2.0)];
+        let rates: [(&str, f64, f64); 2] = [("1/4", 2.0, 1.0), ("1/16", 4.0, 0.25)];
+        println!("--- steady playback, 8 cycles ---");
+        for (cname, c) in curves {
+            for (rname, r, cycle_beats) in rates {
+                let mut plugin = Patada::new();
+                plugin.activate(48_000.0, 512);
+                let params = [r, 1.0, c, 0.0];
+                let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
+                let mut prev = None;
+                let (step, at) = max_gain_step(&mut plugin, &params, 0.0, blocks, &mut prev);
+                let phase = (at / cycle_beats).rem_euclid(1.0);
+                println!("{cname:5} {rname:4}: max |dG| = {step:.5} @ phase {phase:.4}");
+            }
+        }
+        println!("--- transport jump while playing (glide expected) ---");
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        let params = [2.0, 1.0, 2.0, 0.0];
+        let mut prev = None;
+        max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
+        let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
+        println!("soft jump 0.25->0.6: max |dG| = {step:.5}");
+        println!("--- reset() mid-stream + transport jump (flush-on-jump hosts) ---");
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        let mut prev = None;
+        max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
+        plugin.reset();
+        let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
+        println!("soft reset+jump 0.25->0.6: max |dG| = {step:.5}");
+        println!("--- reset() mid-stream, continuous transport ---");
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        let mut prev = None;
+        max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
+        plugin.reset();
+        let after = 10.25 + 4.0 * 512.0 * (120.0 / 60.0) / 48_000.0;
+        let (step, _) = max_gain_step(&mut plugin, &params, after, 2, &mut prev);
+        println!("soft reset continuous: max |dG| = {step:.5}");
+    }
+
+    /// Steady playback must never step the gain: the seams are closed and
+    /// the attacks are finite-slope. Bound = 3x the worst measured slope
+    /// (0.00686 at Punch 1/16); a one-sample click is orders above it.
+    #[test]
+    fn steady_playback_never_steps_the_gain() {
+        for curve in [0.0_f64, 1.0, 2.0] {
+            for (rate, cycle_beats) in [(2.0_f64, 1.0_f64), (4.0, 0.25)] {
+                let mut plugin = Patada::new();
+                plugin.activate(48_000.0, 512);
+                let params = [rate, 1.0, curve, 0.0];
+                let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
+                let mut prev = None;
+                let (step, at) = max_gain_step(&mut plugin, &params, 0.0, blocks, &mut prev);
+                assert!(
+                    step < 0.02,
+                    "curve {curve} rate {rate}: gain stepped {step} at ppq {at}"
+                );
+            }
+        }
+    }
+
+    /// Hosts with flush-on-transport-change call reset() around jumps. That
+    /// must glide like any other jump — snapping there is a one-sample
+    /// click (measured 0.424 before the fix).
+    #[test]
+    fn reset_plus_jump_glides_instead_of_clicking() {
+        let mut plugin = Patada::new();
+        plugin.activate(48_000.0, 512);
+        let params = [2.0, 1.0, 2.0, 0.0];
+        let mut prev = None;
+        max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
+        plugin.reset();
+        let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
+        assert!(step < 0.02, "reset+jump stepped the gain by {step}");
     }
 
     /// The start-up invariant that shipped untested: after new/activate/

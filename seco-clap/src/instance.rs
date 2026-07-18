@@ -174,15 +174,19 @@ pub(crate) unsafe fn apply_input_events<P: Plugin>(
             continue;
         }
         // SAFETY: the header pointer is valid for at least the header bytes.
-        let head = unsafe { *header };
+        // `read_unaligned` because events are only specified as memcpy-able
+        // blobs (events.h:14-17) — nothing promises the pointer is aligned,
+        // and a reference to a misaligned event is UB even if never used.
+        let head = unsafe { header.read_unaligned() };
         if head.space_id != CLAP_CORE_EVENT_SPACE_ID {
             continue;
         }
         match head.type_ {
             CLAP_EVENT_PARAM_VALUE if head.size as usize >= size_of::<ClapEventParamValue>() => {
-                // SAFETY: size checked against the full event; CLAP events
-                // are contiguous blobs of `size` bytes (events.h:14-17).
-                let event = unsafe { &*header.cast::<ClapEventParamValue>() };
+                // SAFETY: size checked against the full event; unaligned for
+                // the same reason as the header read above (the f64 fields
+                // make this struct align-8, stricter than the header).
+                let event = unsafe { header.cast::<ClapEventParamValue>().read_unaligned() };
                 let index = event.param_id as usize;
                 if index < P::PARAMS.len() {
                     inst.param_bits[index].store(event.value.to_bits(), Relaxed);
@@ -364,6 +368,12 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
         // SAFETY: `data32` holds `channel_count` pointers (audio-buffer.h:26-33).
         let out_ptr = unsafe { *out.data32.add(ch) };
         if out_ptr.is_null() {
+            break;
+        }
+        // Some hosts mirror one buffer into several channel slots. A second
+        // `&mut` over the same memory is aliasing UB (and would double-apply
+        // the gain), so the shared buffer is processed exactly once.
+        if channels[..used].iter().any(|existing| ptr::eq(existing.as_ptr(), out_ptr)) {
             break;
         }
         let in_ptr = input
@@ -692,6 +702,84 @@ mod tests {
         // `index < size()`, and the test upholds it.
         let events = unsafe { &*(*list).ctx.cast::<Vec<*const crate::ffi::ClapEventHeader>>() };
         events[index as usize]
+    }
+
+    /// The spec promises events are contiguous memcpy-able blobs
+    /// (events.h:14-17) — it never promises *alignment*. A host with a
+    /// packed event queue can legally hand a param event at an address not
+    /// aligned for its f64 fields; reading it through a reference is UB
+    /// (miri flags it), `read_unaligned` is not.
+    #[test]
+    fn param_event_at_unaligned_address_is_read_safely() {
+        let plugin = create::<HalfGain>(ptr::null());
+        // Backing aligned to 8; the event is planted at +4, so its f64
+        // lands misaligned. 4 + 56 (event size) fits in 64 bytes.
+        let mut backing = [0_u64; 8];
+        let event = ClapEventParamValue {
+            header: crate::ffi::ClapEventHeader {
+                size: size_of::<ClapEventParamValue>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_VALUE,
+                flags: 0,
+            },
+            param_id: 0,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: 0.25,
+        };
+        let misaligned = unsafe { backing.as_mut_ptr().cast::<u8>().add(4) }
+            .cast::<ClapEventParamValue>();
+        // SAFETY: offset 4 + size 56 <= 64 bytes of backing; unaligned write
+        // is explicitly fine.
+        unsafe { misaligned.write_unaligned(event) };
+        let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> = vec![misaligned.cast()];
+        let in_events = ClapInputEvents {
+            ctx: (&raw mut ptrs).cast(),
+            size: list_size,
+            get: list_get,
+        };
+
+        // SAFETY: live instance; list valid for the call.
+        let inst = unsafe { shared::<HalfGain>(plugin) };
+        unsafe { apply_input_events(inst, &raw const in_events) };
+
+        assert_eq!(f64::from_bits(inst.param_bits[0].load(Relaxed)), 0.25);
+        // SAFETY: created above; not used again after this call.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// Hosts sometimes mirror one buffer into both channel slots
+    /// (`data32[0] == data32[1]`). Building two `&mut [f32]` over that
+    /// memory is aliasing UB before a single sample moves, and processing
+    /// it twice doubles the gain. The adapter must collapse duplicates and
+    /// process the shared buffer exactly once.
+    #[test]
+    fn duplicate_channel_pointers_process_once() {
+        let plugin = create::<HalfGain>(ptr::null());
+        let mut mono = vec![1.0_f32; 32];
+        let mp = mono.as_mut_ptr();
+        let mut in_ptrs = [mp, mp];
+        let mut out_ptrs = [mp, mp];
+        let in_buf = stereo_buffer(&mut in_ptrs);
+        let mut out_buf = stereo_buffer(&mut out_ptrs);
+        let process =
+            process_struct(32, Some(&raw const in_buf), &raw mut out_buf, ptr::null(), ptr::null());
+
+        // SAFETY: as in `out_of_place_copies_input_then_processes`.
+        let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
+
+        assert_eq!(status, CLAP_PROCESS_CONTINUE);
+        assert!(
+            mono.iter().all(|&s| s == 0.5),
+            "shared buffer must be halved exactly once, got {}",
+            mono[0]
+        );
+        // SAFETY: created above; not used again after this call.
+        unsafe { ((*plugin).destroy)(plugin) };
     }
 
     #[test]

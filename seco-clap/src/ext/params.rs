@@ -229,6 +229,14 @@ unsafe extern "C" fn flush<P: Plugin>(
     let inst = unsafe { instance::shared::<P>(plugin) };
     // SAFETY: the event list is valid for the duration of this call.
     unsafe { instance::apply_input_events(inst, in_) };
+    // GUI edits reach the host here when the plugin is inactive (no
+    // process() running to drain them).
+    #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+    // SAFETY: flush is the consumer when not processing
+    // (ext/params.h:295-306); `_out` is valid for the call.
+    unsafe {
+        instance::drain_gui_params::<P>(inst, _out)
+    };
 }
 
 #[cfg(test)]

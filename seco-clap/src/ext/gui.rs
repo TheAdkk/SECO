@@ -20,11 +20,15 @@ use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char};
 use std::marker::PhantomData;
 
-use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::NSAutoresizingMaskOptions;
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_web_kit::{
+    WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
+    WKWebViewConfiguration,
+};
 use seco_core::Plugin;
 
 use std::sync::atomic::Ordering::Relaxed;
@@ -58,28 +62,16 @@ const HTML: &str = r#"<!DOCTYPE html>
     color: #ebdbb2;
   }
   .wrap { padding: 24px 28px; }
-  h1 {
-    color: #fabd2f;
-    font-size: 28px;
-    letter-spacing: 0.08em;
-    margin: 0 0 18px 0;
-  }
+  h1 { color: #fabd2f; font-size: 28px; letter-spacing: 0.08em; margin: 0 0 18px 0; }
   .row { margin: 14px 0; }
-  .head { display: flex; justify-content: space-between; font-size: 14px; }
+  .head { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
   .name { opacity: 0.8; }
   .value { color: #fabd2f; font-variant-numeric: tabular-nums; }
-  .bar {
-    margin-top: 5px;
-    height: 4px;
-    background: #3c3836;
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .fill {
-    height: 100%;
-    width: 0%;
-    background: #fabd2f;
-    border-radius: 2px;
+  input[type=range] { width: 100%; accent-color: #fabd2f; margin: 0; }
+  select, input[type=checkbox] { accent-color: #fabd2f; }
+  select {
+    width: 100%; background: #3c3836; color: #ebdbb2;
+    border: none; border-radius: 4px; padding: 4px;
   }
 </style>
 </head>
@@ -89,28 +81,65 @@ const HTML: &str = r#"<!DOCTYPE html>
   <div id="params"></div>
 </div>
 <script>
+  const post = (m) => window.webkit.messageHandlers.seco.postMessage(m);
   const container = document.getElementById("params");
   const rows = new Map();
-  // Called by the plugin (Rust) via evaluateJavaScript, ~30 Hz while open.
-  // Read-only in 6.2: nothing here sends anything back.
-  window.__seco_update = (list) => {
-    for (const p of list) {
-      let row = rows.get(p.n);
-      if (!row) {
-        const el = document.createElement("div");
-        el.className = "row";
-        el.innerHTML =
-          '<div class="head"><span class="name"></span>' +
-          '<span class="value"></span></div>' +
-          '<div class="bar"><div class="fill"></div></div>';
-        el.querySelector(".name").textContent = p.n;
-        container.appendChild(el);
-        row = { value: el.querySelector(".value"), fill: el.querySelector(".fill") };
-        rows.set(p.n, row);
+
+  function buildRow(i, p) {
+    const el = document.createElement("div");
+    el.className = "row";
+    el.innerHTML = '<div class="head"><span class="name"></span>' +
+                   '<span class="value"></span></div>';
+    el.querySelector(".name").textContent = p.n;
+    let control, dragging = { on: false };
+    if (p.k === "s") {
+      control = document.createElement("select");
+      for (let step = 0; step < p.opts.length; step++) {
+        const opt = document.createElement("option");
+        opt.value = step;
+        opt.textContent = p.opts[step];
+        control.appendChild(opt);
       }
-      row.value.textContent = p.t;
-      row.fill.style.width = (p.v * 100).toFixed(1) + "%";
+      // A select change is an atomic gesture.
+      control.addEventListener("change", () => {
+        post("begin " + i); post("set " + i + " " + control.value); post("end " + i);
+      });
+    } else if (p.k === "t") {
+      control = document.createElement("input");
+      control.type = "checkbox";
+      control.addEventListener("change", () => {
+        post("begin " + i);
+        post("set " + i + " " + (control.checked ? 1 : 0));
+        post("end " + i);
+      });
+    } else {
+      control = document.createElement("input");
+      control.type = "range";
+      control.min = 0; control.max = 1000; control.step = 1;
+      control.addEventListener("pointerdown", () => { dragging.on = true; post("begin " + i); });
+      control.addEventListener("pointerup", () => { dragging.on = false; post("end " + i); });
+      control.addEventListener("input", () => {
+        const plain = p.min + (control.value / 1000) * (p.max - p.min);
+        post("set " + i + " " + plain);
+      });
     }
+    el.appendChild(control);
+    container.appendChild(el);
+    return { value: el.querySelector(".value"), control, kind: p.k, dragging };
+  }
+
+  // Pushed by Rust ~30 Hz. While the user is dragging a control we skip
+  // refreshing it, so the timer echo never fights the pointer.
+  window.__seco_update = (list) => {
+    list.forEach((p, i) => {
+      let row = rows.get(p.n);
+      if (!row) { row = buildRow(i, p); rows.set(p.n, row); }
+      row.value.textContent = p.t;
+      if (row.dragging.on) return;
+      if (row.kind === "s") row.control.value = Math.round(p.v * (p.opts.length - 1));
+      else if (row.kind === "t") row.control.checked = p.v >= 0.5;
+      else row.control.value = Math.round(p.v * 1000);
+    });
   };
 </script>
 </body>
@@ -120,6 +149,10 @@ const HTML: &str = r#"<!DOCTYPE html>
 /// is `!Send`), which matches clap.gui's threading contract.
 pub(crate) struct GuiHandle {
     webview: Retained<WKWebView>,
+    /// Kept to remove the script message handler on destroy — the content
+    /// controller retains its handlers, and unhooking before teardown means
+    /// no message can ever reach a dying plugin.
+    controller: Retained<WKUserContentController>,
     /// Host + its timer vtable, kept to unregister on destroy. Null/None if
     /// the host lacks clap.timer-support (the view then shows open-time
     /// values only).
@@ -135,6 +168,63 @@ pub(crate) type GuiSlot = UnsafeCell<Option<GuiHandle>>;
 
 pub(crate) fn empty_slot() -> GuiSlot {
     UnsafeCell::new(None)
+}
+
+/// Ivars of the JS->Rust bridge object. The handler cannot be generic
+/// (ObjC classes aren't), so it carries a monomorphized enqueue fn pointer
+/// picked at create() time.
+pub(crate) struct HandlerIvars {
+    plugin: *const ClapPlugin,
+    enqueue: unsafe fn(*const ClapPlugin, instance::gui_queue::GuiMsg),
+}
+
+define_class!(
+    /// Receives `webkit.messageHandlers.seco.postMessage(...)` calls from
+    /// the page. WebKit delivers these on the main thread, one at a time —
+    /// the same serialized class as every other gui callback.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "SecoParamMessageHandler"]
+    #[ivars = HandlerIvars]
+    struct ParamMessageHandler;
+
+    unsafe impl NSObjectProtocol for ParamMessageHandler {}
+
+    unsafe impl WKScriptMessageHandler for ParamMessageHandler {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+        fn did_receive(&self, _controller: &WKUserContentController, message: &WKScriptMessage) {
+            // SAFETY (objc2 contract): body() returns the message payload.
+            let body = unsafe { message.body() };
+            let Some(text) = body.downcast_ref::<NSString>().map(|s| s.to_string()) else {
+                return;
+            };
+            let Some(msg) = parse_msg(&text) else {
+                return;
+            };
+            // SAFETY: the handler is unhooked before the gui (and long
+            // before the plugin) is destroyed, so `plugin` is live; we are
+            // on the main thread (WebKit contract).
+            unsafe { (self.ivars().enqueue)(self.ivars().plugin, msg) };
+        }
+    }
+);
+
+/// Wire format from JS, deliberately dumb: "begin <i>", "set <i> <plain>",
+/// "end <i>".
+fn parse_msg(text: &str) -> Option<instance::gui_queue::GuiMsg> {
+    use instance::gui_queue::GuiMsg;
+    let mut parts = text.split_ascii_whitespace();
+    let verb = parts.next()?;
+    let index: usize = parts.next()?.parse().ok()?;
+    match verb {
+        "begin" => Some(GuiMsg::GestureBegin(index)),
+        "end" => Some(GuiMsg::GestureEnd(index)),
+        "set" => {
+            let value: f64 = parts.next()?.parse().ok()?;
+            value.is_finite().then_some(GuiMsg::Set(index, value))
+        }
+        _ => None,
+    }
 }
 
 /// Assembles the gui vtable for a concrete plugin type.
@@ -226,6 +316,22 @@ unsafe extern "C" fn create<P: Plugin>(
     // SAFETY (objc2 contract): default-constructing a WKWebViewConfiguration
     // on the main thread, immediately consumed by the webview init below.
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    // JS -> Rust bridge: the page posts to webkit.messageHandlers.seco.
+    let handler = ParamMessageHandler::alloc(mtm).set_ivars(HandlerIvars {
+        plugin,
+        enqueue: instance::queue_gui_param_change::<P>,
+    });
+    // SAFETY (objc2 contract): plain NSObject init on the allocated object.
+    let handler: Retained<ParamMessageHandler> = unsafe { msg_send![super(handler), init] };
+    // SAFETY (objc2 contract): the controller retains the handler; name
+    // must match the JS side.
+    let controller = unsafe { config.userContentController() };
+    unsafe {
+        controller.addScriptMessageHandler_name(
+            ProtocolObject::from_ref(&*handler),
+            &NSString::from_str("seco"),
+        );
+    }
     // SAFETY (objc2 contract): initWithFrame:configuration: on a freshly
     // allocated WKWebView with a valid configuration.
     let webview = unsafe {
@@ -245,7 +351,7 @@ unsafe extern "C" fn create<P: Plugin>(
     let host = unsafe { instance::shared::<P>(plugin) }.host;
     let (host_timer, timer_id) = register_refresh_timer(host);
 
-    *slot = Some(GuiHandle { webview, host, host_timer, timer_id });
+    *slot = Some(GuiHandle { webview, controller, host, host_timer, timer_id });
     true
 }
 
@@ -273,6 +379,15 @@ fn register_refresh_timer(host: *const ClapHost) -> (*const ClapHostTimerSupport
 /// present. Idempotent.
 fn drop_handle(slot: &mut Option<GuiHandle>) {
     if let Some(handle) = slot.take() {
+        // Unhook JS->Rust first: after this line no message can reach the
+        // plugin, whatever the page does while tearing down.
+        // SAFETY (objc2 contract): removing by the name registered in
+        // create(); main thread.
+        unsafe {
+            handle
+                .controller
+                .removeScriptMessageHandlerForName(&NSString::from_str("seco"));
+        }
         if let Some(timer_id) = handle.timer_id {
             if !handle.host_timer.is_null() {
                 // SAFETY: [main-thread] (gui callback); vtable + host valid
@@ -448,6 +563,7 @@ unsafe extern "C" fn on_timer<P: Plugin>(plugin: *const ClapPlugin, timer_id: Cl
 /// source of truth) and pushes them into the page. Main thread: the format!
 /// allocations here never touch the audio path.
 fn push_params<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
+    use seco_core::ParamRange;
     let mut json = String::from("[");
     for (index, desc) in P::PARAMS.iter().enumerate() {
         let value = f64::from_bits(inst.param_bits[index].load(Relaxed));
@@ -455,11 +571,26 @@ fn push_params<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
         let (min, max) = (desc.range.min(), desc.range.max());
         let norm =
             if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
+        let (kind, opts) = match &desc.range {
+            ParamRange::Continuous { .. } => ("c", String::from("[]")),
+            ParamRange::Stepped { labels, .. } => {
+                let mut list = String::from("[");
+                for (li, label) in labels.iter().enumerate() {
+                    if li > 0 {
+                        list.push(',');
+                    }
+                    list.push_str(&format!("\"{}\"", escape_js(label)));
+                }
+                list.push(']');
+                ("s", list)
+            }
+            ParamRange::Toggle { .. } => ("t", String::from("[]")),
+        };
         if index > 0 {
             json.push(',');
         }
         json.push_str(&format!(
-            "{{\"n\":\"{}\",\"t\":\"{}\",\"v\":{norm:.4}}}",
+            "{{\"n\":\"{}\",\"t\":\"{}\",\"v\":{norm:.4},\"k\":\"{kind}\",\"min\":{min},\"max\":{max},\"opts\":{opts}}}",
             escape_js(desc.name),
             escape_js(&text),
         ));

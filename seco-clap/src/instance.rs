@@ -30,6 +30,13 @@ use crate::ext::audio_ports;
 use crate::ext::params::ParamsImpl;
 use crate::ext::state::StateImpl;
 use crate::factory;
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+use crate::ffi::{
+    CLAP_EVENT_IS_LIVE, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+    ClapEventHeader, ClapEventParamGesture, ClapOutputEvents,
+};
+#[cfg(all(feature = "gui", target_os = "macos"))]
+use crate::ffi::ClapHostParams;
 use crate::ffi::{
     CLAP_BEATTIME_FACTOR, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT,
     CLAP_EXT_AUDIO_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_PROCESS_CONTINUE,
@@ -68,6 +75,19 @@ pub(crate) struct Instance<P: Plugin> {
     /// the no-gui build stays byte-identical.
     #[cfg(all(feature = "gui", target_os = "macos"))]
     pub(crate) host: *const ClapHost,
+    /// Host params extension, looked up in `plugin_init` (host callbacks
+    /// are forbidden in create, factory/plugin-factory.h:33). Main-thread
+    /// written-once/read-only field, like the gui slot.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    pub(crate) host_params: UnsafeCell<*const ClapHostParams>,
+    /// GUI -> host parameter changes, pending until the next process() or
+    /// flush() drains them. One slot per param: value coalesces to the
+    /// latest (a fast drag becomes one event per drain), gesture edges are
+    /// sticky bits. Single producer (main-thread gui callbacks, serialized
+    /// by the host) / single consumer (the audio-thread role) — the same
+    /// crossing model as param_bits.
+    #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+    pub(crate) gui_pending: [PendingParam; MAX_PARAMS],
     #[cfg(debug_assertions)]
     pub(crate) trace: std::sync::Arc<crate::trace::TransportTrace>,
     #[cfg(debug_assertions)]
@@ -112,7 +132,13 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
         clap_plugin: ClapPlugin {
             desc: factory::descriptor_for::<P>(),
             plugin_data: ptr::null_mut(),
-            init: plugin_init,
+            init: {
+                #[cfg(not(all(feature = "gui", target_os = "macos")))]
+                let f = plugin_init as unsafe extern "C" fn(*const ClapPlugin) -> bool;
+                #[cfg(all(feature = "gui", target_os = "macos"))]
+                let f = plugin_init::<P> as unsafe extern "C" fn(*const ClapPlugin) -> bool;
+                f
+            },
             destroy: plugin_destroy::<P>,
             activate: plugin_activate::<P>,
             deactivate: plugin_deactivate::<P>,
@@ -133,6 +159,10 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
         gui: crate::ext::gui::empty_slot(),
         #[cfg(all(feature = "gui", target_os = "macos"))]
         host,
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        host_params: UnsafeCell::new(ptr::null()),
+        #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+        gui_pending: std::array::from_fn(|_| PendingParam::default()),
         #[cfg(debug_assertions)]
         trace,
         #[cfg(debug_assertions)]
@@ -217,6 +247,193 @@ pub(crate) unsafe fn apply_input_events<P: Plugin>(
     let _ = CLAP_EVENT_TRANSPORT;
 }
 
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) mod gui_queue {
+    //! The GUI->host parameter pipe. See `Instance::gui_pending`.
+
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::{AcqRel, Relaxed, Release}};
+
+    /// Sticky pending bits. VALUE coalesces; BEGIN/END are edges.
+    pub(crate) const VALUE: u8 = 1 << 0;
+    pub(crate) const BEGIN: u8 = 1 << 1;
+    pub(crate) const END: u8 = 1 << 2;
+
+    #[derive(Default)]
+    pub(crate) struct PendingParam {
+        /// Latest plain value from the GUI, as f64 bits.
+        pub(crate) value_bits: AtomicU64,
+        /// VALUE/BEGIN/END bits. The Release store here publishes
+        /// `value_bits` to the draining thread's Acquire swap.
+        pub(crate) flags: AtomicU8,
+    }
+
+    impl PendingParam {
+        pub(crate) fn set_value(&self, value: f64) {
+            // Value first (Relaxed), then the flag with Release: the
+            // consumer's Acquire swap of `flags` makes the value visible.
+            self.value_bits.store(value.to_bits(), Relaxed);
+            self.flags.fetch_or(VALUE, Release);
+        }
+
+        pub(crate) fn mark(&self, bit: u8) {
+            self.flags.fetch_or(bit, Release);
+        }
+
+        pub(crate) fn take(&self) -> (u8, f64) {
+            let flags = self.flags.swap(0, AcqRel);
+            (flags, f64::from_bits(self.value_bits.load(Relaxed)))
+        }
+
+        /// Puts unsent bits back after a failed try_push, to retry on the
+        /// next drain.
+        pub(crate) fn retry(&self, bits: u8) {
+            self.flags.fetch_or(bits, Release);
+        }
+    }
+
+    /// A parsed message from the editor.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum GuiMsg {
+        GestureBegin(usize),
+        Set(usize, f64),
+        GestureEnd(usize),
+    }
+}
+
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) use gui_queue::PendingParam;
+
+/// Queues a GUI-originated parameter change and asks the host to flush.
+///
+/// This is CLAP's scenario III (ext/params.h:54-60): the GUI never writes
+/// the audio-visible value directly — the change is applied AND announced
+/// to the host inside the next process()/flush() drain, keeping the two
+/// perfectly consistent and giving the GUI the exact same latency as
+/// host-sent events.
+///
+/// SAFETY contract: `plugin` per [`shared`]'s contract; call from the main
+/// thread only (gui/webview callbacks).
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) unsafe fn queue_gui_param_change<P: Plugin>(
+    plugin: *const ClapPlugin,
+    msg: gui_queue::GuiMsg,
+) {
+    use gui_queue::{BEGIN, END, GuiMsg};
+    // SAFETY: per fn contract.
+    let inst = unsafe { shared::<P>(plugin) };
+    let index = match msg {
+        GuiMsg::GestureBegin(index) | GuiMsg::Set(index, _) | GuiMsg::GestureEnd(index) => index,
+    };
+    if index >= P::PARAMS.len() {
+        return;
+    }
+    match msg {
+        GuiMsg::GestureBegin(_) => inst.gui_pending[index].mark(BEGIN),
+        GuiMsg::Set(_, value) => {
+            let range = &P::PARAMS[index].range;
+            inst.gui_pending[index].set_value(value.clamp(range.min(), range.max()));
+        }
+        GuiMsg::GestureEnd(_) => inst.gui_pending[index].mark(END),
+    }
+    // Ask the host to schedule process()/flush() so the drain runs soon.
+    // [thread-safe, !audio-thread] (ext/params.h:377-381); we are on main.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    {
+        // SAFETY: main-thread-only field (written once in plugin_init).
+        let host_params = unsafe { *inst.host_params.get() };
+        if !host_params.is_null() && !inst.host.is_null() {
+            // SAFETY: valid host vtable per host.h:20-25.
+            unsafe { ((*host_params).request_flush)(inst.host) };
+        }
+    }
+}
+
+/// Drains GUI-originated changes: writes the audio-visible atomic FIRST,
+/// then announces the change to the host via `out_events`.
+///
+/// Order rationale: the audio truth must never lag the host's view. If the
+/// host push fails (queue full), audio already plays the new value and the
+/// notification retries next drain; the reverse order could record
+/// automation the audio was not playing.
+///
+/// SAFETY contract: runs inside process() or params.flush() (the single
+/// consumer); `out`, if non-null, valid for the call.
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) unsafe fn drain_gui_params<P: Plugin>(
+    inst: &Instance<P>,
+    out: *const ClapOutputEvents,
+) {
+    use gui_queue::{BEGIN, END, VALUE};
+    for (index, pending) in inst.gui_pending.iter().enumerate().take(P::PARAMS.len()) {
+        let (flags, value) = pending.take();
+        if flags == 0 {
+            continue;
+        }
+        // 1. The audio-visible atomic — same slot host events write.
+        if flags & VALUE != 0 {
+            inst.param_bits[index].store(value.to_bits(), Relaxed);
+        }
+        // 2. The host notification, in gesture order.
+        if out.is_null() {
+            continue; // host offered no event list; audio is correct, move on
+        }
+        let mut unsent = 0;
+        if flags & BEGIN != 0 && !push_gesture(out, index as u32, CLAP_EVENT_PARAM_GESTURE_BEGIN) {
+            unsent |= BEGIN;
+        }
+        if flags & VALUE != 0 && !push_value(out, index as u32, value) {
+            unsent |= VALUE;
+        }
+        if flags & END != 0 && !push_gesture(out, index as u32, CLAP_EVENT_PARAM_GESTURE_END) {
+            unsent |= END;
+        }
+        if unsent != 0 {
+            pending.retry(unsent);
+        }
+    }
+}
+
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+fn push_value(out: *const ClapOutputEvents, param_id: u32, value: f64) -> bool {
+    let event = ClapEventParamValue {
+        header: ClapEventHeader {
+            size: size_of::<ClapEventParamValue>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            // A user turning our on-screen knob is the definition of a
+            // live event (events.h:30-32).
+            flags: CLAP_EVENT_IS_LIVE,
+        },
+        param_id,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value,
+    };
+    // SAFETY: out is non-null (checked by caller) and valid for the call;
+    // try_push copies the event (events.h:359-362).
+    unsafe { ((*out).try_push)(out, (&raw const event).cast()) }
+}
+
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+fn push_gesture(out: *const ClapOutputEvents, param_id: u32, type_: u16) -> bool {
+    let event = ClapEventParamGesture {
+        header: ClapEventHeader {
+            size: size_of::<ClapEventParamGesture>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_,
+            flags: CLAP_EVENT_IS_LIVE,
+        },
+        param_id,
+    };
+    // SAFETY: as in push_value.
+    unsafe { ((*out).try_push)(out, (&raw const event).cast()) }
+}
+
 /// Converts a CLAP transport into core's host-agnostic [`Transport`],
 /// honoring the validity flags (events.h:263-272).
 fn convert_transport(tp: &ClapEventTransport) -> Transport {
@@ -234,8 +451,31 @@ fn convert_transport(tp: &ClapEventTransport) -> Transport {
 }
 
 /// `plugin.h:46-53` `[main-thread]`. No host extensions are needed yet, so
-/// there is nothing to do.
+/// there is nothing to do. (Non-generic on purpose: the gui build swaps in
+/// a generic version below, and the no-gui binary must stay byte-identical.)
+#[cfg(not(all(feature = "gui", target_os = "macos")))]
 unsafe extern "C" fn plugin_init(_plugin: *const ClapPlugin) -> bool {
+    true
+}
+
+/// `plugin.h:46-53` `[main-thread]`. Host extension lookups belong here —
+/// they are forbidden in create_plugin (factory/plugin-factory.h:33).
+#[cfg(all(feature = "gui", target_os = "macos"))]
+unsafe extern "C" fn plugin_init<P: Plugin>(_plugin: *const ClapPlugin) -> bool {
+    if !_plugin.is_null() {
+        // SAFETY: live instance per `shared`'s contract.
+        let inst = unsafe { shared::<P>(_plugin) };
+        if !inst.host.is_null() {
+            // SAFETY: get_extension is [thread-safe], callable from init on
+            // (host.h:20-25).
+            let ext = unsafe {
+                ((*inst.host).get_extension)(inst.host, crate::ffi::CLAP_EXT_PARAMS.as_ptr())
+            };
+            // SAFETY: main-thread-only field, written in init before any
+            // possible reader (the gui/webview callbacks all come later).
+            unsafe { *inst.host_params.get() = ext.cast() };
+        }
+    }
     true
 }
 
@@ -348,6 +588,15 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
     // block at event offsets is a known Phase 3+ refinement.
     // SAFETY: `in_events` is valid for this call.
     unsafe { apply_input_events(inst, process.in_events) };
+    // GUI edits drain after host events: within one block a live touch on
+    // the on-screen control wins; hosts pause automation during our
+    // gesture anyway (that is what the gesture events are for).
+    #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+    // SAFETY: we are the single consumer (audio-thread role); out_events
+    // valid for the call.
+    unsafe {
+        drain_gui_params::<P>(inst, process.out_events)
+    };
 
     let frames = process.frames_count as usize;
     if frames == 0 {
@@ -956,6 +1205,191 @@ mod tests {
 
         reader.join().unwrap();
         // SAFETY: created above, both threads joined; not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+    /// Out-events sink that records every pushed event.
+    #[derive(Default)]
+    struct Collected {
+        events: Vec<(u16, u32, f64, u32)>, // (type, param_id, value, header.flags)
+        reject: bool,
+    }
+
+    unsafe extern "C" fn collect_push(
+        list: *const ClapOutputEvents,
+        event: *const crate::ffi::ClapEventHeader,
+    ) -> bool {
+        // SAFETY: ctx points to the test's Collected; event valid per contract.
+        let sink = unsafe { &mut *(*list).ctx.cast::<Collected>() };
+        if sink.reject {
+            return false;
+        }
+        let head = unsafe { event.read_unaligned() };
+        let (param_id, value) = match head.type_ {
+            CLAP_EVENT_PARAM_VALUE => {
+                let ev = unsafe { event.cast::<ClapEventParamValue>().read_unaligned() };
+                (ev.param_id, ev.value)
+            }
+            _ => {
+                let ev = unsafe { event.cast::<ClapEventParamGesture>().read_unaligned() };
+                (ev.param_id, f64::NAN)
+            }
+        };
+        sink.events.push((head.type_, param_id, value, head.flags));
+        true
+    }
+
+    fn out_list(sink: &mut Collected) -> ClapOutputEvents {
+        ClapOutputEvents { ctx: (sink as *mut Collected).cast(), try_push: collect_push }
+    }
+
+    fn run_silent_block(plugin: *const ClapPlugin, out: *const ClapOutputEvents) {
+        let mut l = vec![0.0_f32; 8];
+        let mut r = vec![0.0_f32; 8];
+        let mut out_ptrs = [l.as_mut_ptr(), r.as_mut_ptr()];
+        let mut out_buf = stereo_buffer(&mut out_ptrs);
+        let mut process = process_struct(8, None, &raw mut out_buf, ptr::null(), ptr::null());
+        process.out_events = out;
+        // SAFETY: live instance; process struct valid for the call.
+        unsafe { ((*plugin).process)(plugin, &raw const process) };
+    }
+
+    /// The GUI drain writes the audio-visible atomic FIRST, then announces
+    /// begin/value/end to the host, all tagged IS_LIVE.
+    #[test]
+    fn gui_edit_updates_atomic_and_notifies_host_in_order() {
+        use gui_queue::GuiMsg;
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: main-thread contract holds (single-threaded test).
+        unsafe {
+            queue_gui_param_change::<HalfGain>(plugin, GuiMsg::GestureBegin(0));
+            queue_gui_param_change::<HalfGain>(plugin, GuiMsg::Set(0, 0.75));
+            queue_gui_param_change::<HalfGain>(plugin, GuiMsg::GestureEnd(0));
+        }
+        let mut sink = Collected::default();
+        let out = out_list(&mut sink);
+        run_silent_block(plugin, &raw const out);
+
+        // SAFETY: live instance; atomics shared-safe.
+        let inst = unsafe { shared::<HalfGain>(plugin) };
+        assert_eq!(f64::from_bits(inst.param_bits[0].load(Relaxed)), 0.75);
+        let types: Vec<u16> = sink.events.iter().map(|e| e.0).collect();
+        assert_eq!(
+            types,
+            vec![
+                crate::ffi::CLAP_EVENT_PARAM_GESTURE_BEGIN,
+                CLAP_EVENT_PARAM_VALUE,
+                crate::ffi::CLAP_EVENT_PARAM_GESTURE_END
+            ]
+        );
+        assert_eq!(sink.events[1].2, 0.75);
+        assert!(
+            sink.events.iter().all(|e| e.3 & crate::ffi::CLAP_EVENT_IS_LIVE != 0),
+            "GUI edits are live user events"
+        );
+        // SAFETY: created above; not used again after this call.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// A fast drag (many set messages between drains) coalesces to ONE
+    /// value event carrying the latest value.
+    #[test]
+    fn gui_fast_drag_coalesces_to_latest() {
+        use gui_queue::GuiMsg;
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: as above.
+        unsafe {
+            queue_gui_param_change::<HalfGain>(plugin, GuiMsg::GestureBegin(0));
+            for step in 0..=100 {
+                queue_gui_param_change::<HalfGain>(plugin, GuiMsg::Set(0, step as f64 / 100.0));
+            }
+            queue_gui_param_change::<HalfGain>(plugin, GuiMsg::GestureEnd(0));
+        }
+        let mut sink = Collected::default();
+        let out = out_list(&mut sink);
+        run_silent_block(plugin, &raw const out);
+
+        let values: Vec<f64> =
+            sink.events.iter().filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE).map(|e| e.2).collect();
+        assert_eq!(values, vec![1.0], "must coalesce to a single latest-value event");
+        // SAFETY: created above; not used again after this call.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// If the host's event queue rejects the push, the audio atomic is
+    /// already correct and the notification retries on the next drain.
+    #[test]
+    fn gui_notification_retries_after_full_host_queue() {
+        use gui_queue::GuiMsg;
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: as above.
+        unsafe { queue_gui_param_change::<HalfGain>(plugin, GuiMsg::Set(0, 0.25)) };
+
+        let mut sink = Collected { reject: true, ..Default::default() };
+        let out = out_list(&mut sink);
+        run_silent_block(plugin, &raw const out);
+        // SAFETY: live instance.
+        let inst = unsafe { shared::<HalfGain>(plugin) };
+        assert_eq!(f64::from_bits(inst.param_bits[0].load(Relaxed)), 0.25, "audio first");
+        assert!(sink.events.is_empty());
+
+        sink.reject = false;
+        let out = out_list(&mut sink);
+        run_silent_block(plugin, &raw const out);
+        let values: Vec<f64> =
+            sink.events.iter().filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE).map(|e| e.2).collect();
+        assert_eq!(values, vec![0.25], "retried on the next drain");
+        // SAFETY: created above; not used again after this call.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// The GUI producer races the audio-thread drain under miri's race
+    /// detector: the Release/Acquire pair on the pending flags must publish
+    /// the value bits, and no read may tear.
+    #[test]
+    fn gui_queue_races_drain_without_ub() {
+        use gui_queue::GuiMsg;
+        const ITERS: usize = if cfg!(miri) { 48 } else { 1500 };
+
+        struct SendPlugin(*const ClapPlugin);
+        // SAFETY: instance outlives both threads (joined before destroy);
+        // producer = one thread (main-thread role), consumer = this thread
+        // (audio role) — the exact pair the design permits concurrently.
+        unsafe impl Send for SendPlugin {}
+
+        let plugin = create::<HalfGain>(ptr::null());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let producer = {
+            let plugin = SendPlugin(plugin);
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let plugin = plugin;
+                let SendPlugin(plugin) = plugin;
+                barrier.wait();
+                for step in 0..ITERS {
+                    // SAFETY: serialized single producer, live instance.
+                    unsafe {
+                        queue_gui_param_change::<HalfGain>(
+                            plugin,
+                            GuiMsg::Set(0, (step % 100) as f64 / 100.0),
+                        );
+                    }
+                }
+            })
+        };
+
+        let mut sink = Collected::default();
+        barrier.wait();
+        for _ in 0..ITERS {
+            let out = out_list(&mut sink);
+            run_silent_block(plugin, &raw const out);
+        }
+        producer.join().unwrap();
+        for (type_, _, value, _) in &sink.events {
+            if *type_ == CLAP_EVENT_PARAM_VALUE {
+                assert!((0.0..=1.0).contains(value), "torn or corrupt value: {value}");
+            }
+        }
+        // SAFETY: created above, threads joined; not used again.
         unsafe { ((*plugin).destroy)(plugin) };
     }
 }

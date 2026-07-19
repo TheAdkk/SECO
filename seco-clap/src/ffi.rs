@@ -271,6 +271,17 @@ pub struct ClapEventParamValue {
     pub value: f64,
 }
 
+/// `clap_event_param_gesture_t` — `events.h:256-261`. Marks the beginning
+/// or end of a user gesture on a parameter (types
+/// `CLAP_EVENT_PARAM_GESTURE_BEGIN`/`_END`); improves host automation
+/// touch/latch behavior (events.h:111-114).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ClapEventParamGesture {
+    pub header: ClapEventHeader,
+    pub param_id: ClapId,
+}
+
 /// `clap_input_events_t` — `events.h:344-353`. Host-sorted by sample time.
 #[repr(C)]
 pub struct ClapInputEvents {
@@ -643,4 +654,27 @@ pub struct ClapPluginParams {
         in_: *const ClapInputEvents,
         out: *const ClapOutputEvents,
     ),
+}
+
+/// `clap_param_rescan_flags` — `ext/params.h:348`. Typedef mirrored for
+/// signature fidelity; the flag constants are not mirrored (nothing uses
+/// them yet — a typedef carries no member-omission hazard).
+pub type ClapParamRescanFlags = u32;
+/// `clap_param_clear_flags` — `ext/params.h:360`. See
+/// [`ClapParamRescanFlags`].
+pub type ClapParamClearFlags = u32;
+
+/// `clap_host_params_t` — `ext/params.h:362-382`. `request_flush` is
+/// `[thread-safe, !audio-thread]` (`:377-381`): after it, the host
+/// schedules a call to `process()` or `params.flush()`, where the plugin
+/// can emit its outgoing parameter events.
+#[repr(C)]
+pub struct ClapHostParams {
+    pub rescan: unsafe extern "C" fn(host: *const ClapHost, flags: ClapParamRescanFlags),
+    pub clear: unsafe extern "C" fn(
+        host: *const ClapHost,
+        param_id: ClapId,
+        flags: ClapParamClearFlags,
+    ),
+    pub request_flush: unsafe extern "C" fn(host: *const ClapHost),
 }

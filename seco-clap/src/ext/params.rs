@@ -54,6 +54,25 @@ fn step_index(value: f64, len: usize) -> usize {
     (value.round().max(0.0) as usize).min(len.saturating_sub(1))
 }
 
+/// Display formatting for the GUI. Deliberately a *copy* of the logic in
+/// `value_to_text` rather than a shared helper: routing the host path
+/// through a helper changed the no-gui binary, and the byte-identity
+/// guarantee wins. The `display_matches_value_to_text` test pins the two
+/// implementations together — if they ever format differently, it fails.
+/// `None` only for a stepped value with no label.
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) fn plain_to_display(range: &ParamRange, value: f64) -> Option<String> {
+    match range {
+        ParamRange::Continuous { .. } => Some(format!("{value}")),
+        ParamRange::Stepped { labels, .. } => {
+            labels.get(step_index(value, labels.len())).map(|label| (*label).to_string())
+        }
+        ParamRange::Toggle { .. } => {
+            Some(if value >= 0.5 { "On" } else { "Off" }.to_string())
+        }
+    }
+}
+
 /// Copies `text` into the host's capacity-limited out buffer, NUL-terminated.
 ///
 /// SAFETY contract: `out` must be valid for `capacity` bytes, `capacity > 0`.
@@ -210,4 +229,81 @@ unsafe extern "C" fn flush<P: Plugin>(
     let inst = unsafe { instance::shared::<P>(plugin) };
     // SAFETY: the event list is valid for the duration of this call.
     unsafe { instance::apply_input_events(inst, in_) };
+}
+
+#[cfg(test)]
+mod tests {
+    use seco_core::{AudioBuffer, ParamDesc, Plugin, RtContext};
+
+    use super::*;
+
+    /// Text-conversion-only plugin: `value_to_text` never dereferences the
+    /// plugin pointer, so no instance (and no descriptor storage) is needed.
+    struct TextOnly;
+
+    impl Plugin for TextOnly {
+        const ID: &'static str = "dev.seco.test.text-only";
+        const NAME: &'static str = "text-only";
+        const VENDOR: &'static str = "SECO tests";
+        const VERSION: &'static str = "0.0.0";
+        const PARAMS: &'static [ParamDesc] = &[
+            ParamDesc {
+                name: "Cont",
+                range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5 },
+            },
+            ParamDesc {
+                name: "Step",
+                range: ParamRange::Stepped { labels: &["1/1", "1/2", "1/4"], default: 1 },
+            },
+            ParamDesc { name: "Tog", range: ParamRange::Toggle { default: false, bypass: false } },
+        ];
+
+        fn new() -> Self {
+            TextOnly
+        }
+        fn process(&mut self, _audio: &mut AudioBuffer, _rt: &RtContext) {}
+    }
+
+    /// `plain_to_display` (used by the GUI) is a deliberate copy of the
+    /// `value_to_text` formatting so the no-gui binary stays byte-identical.
+    /// This test is the leash: if the copies ever diverge, it fails.
+    #[test]
+    fn display_matches_value_to_text() {
+        let cases: &[(ClapId, f64)] = &[
+            (0, 0.0),
+            (0, 0.3),
+            (0, 0.123456789),
+            (0, 1.0),
+            (1, 0.0),
+            (1, 1.0),
+            (1, 1.4),
+            (1, 2.0),
+            (1, 7.0),
+            (2, 0.0),
+            (2, 0.49),
+            (2, 0.5),
+            (2, 1.0),
+        ];
+        for &(id, value) in cases {
+            let mut buffer = [0 as c_char; 64];
+            // SAFETY: value_to_text never touches the plugin pointer; the
+            // out buffer is ours with the stated capacity.
+            let ok = unsafe {
+                (ParamsImpl::<TextOnly>::VTABLE.value_to_text)(
+                    std::ptr::null(),
+                    id,
+                    value,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                )
+            };
+            assert!(ok, "value_to_text failed for param {id} value {value}");
+            // SAFETY: value_to_text NUL-terminated the buffer.
+            let host_text =
+                unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap().to_string();
+            let gui_text = plain_to_display(&TextOnly::PARAMS[id as usize].range, value)
+                .expect("display formatting failed");
+            assert_eq!(host_text, gui_text, "param {id} value {value}: host vs GUI text");
+        }
+    }
 }

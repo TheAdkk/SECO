@@ -27,10 +27,14 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 use seco_core::Plugin;
 
+use std::sync::atomic::Ordering::Relaxed;
+
+use crate::ext::params::plain_to_display;
 use crate::ffi::{
-    CLAP_WINDOW_API_COCOA, ClapGuiResizeHints, ClapPlugin, ClapPluginGui, ClapWindow,
+    CLAP_EXT_TIMER_SUPPORT, CLAP_WINDOW_API_COCOA, ClapGuiResizeHints, ClapHost,
+    ClapHostTimerSupport, ClapId, ClapPlugin, ClapPluginGui, ClapPluginTimerSupport, ClapWindow,
 };
-use crate::instance;
+use crate::instance::{self, Instance};
 
 /// Fixed logical size for Phase 6.1 (cocoa is logical-pixel,
 /// ext/gui.h:56-57).
@@ -47,28 +51,81 @@ const HTML: &str = r#"<!DOCTYPE html>
   html, body {
     margin: 0;
     height: 100%;
-    display: grid;
-    place-items: center;
     background: #1d2021;
     font-family: -apple-system, sans-serif;
     user-select: none;
     -webkit-user-select: none;
+    color: #ebdbb2;
   }
+  .wrap { padding: 24px 28px; }
   h1 {
     color: #fabd2f;
-    font-size: 64px;
+    font-size: 28px;
     letter-spacing: 0.08em;
-    margin: 0;
+    margin: 0 0 18px 0;
+  }
+  .row { margin: 14px 0; }
+  .head { display: flex; justify-content: space-between; font-size: 14px; }
+  .name { opacity: 0.8; }
+  .value { color: #fabd2f; font-variant-numeric: tabular-nums; }
+  .bar {
+    margin-top: 5px;
+    height: 4px;
+    background: #3c3836;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    width: 0%;
+    background: #fabd2f;
+    border-radius: 2px;
   }
 </style>
 </head>
-<body><h1>Zape</h1></body>
+<body>
+<div class="wrap">
+  <h1>Zape</h1>
+  <div id="params"></div>
+</div>
+<script>
+  const container = document.getElementById("params");
+  const rows = new Map();
+  // Called by the plugin (Rust) via evaluateJavaScript, ~30 Hz while open.
+  // Read-only in 6.2: nothing here sends anything back.
+  window.__seco_update = (list) => {
+    for (const p of list) {
+      let row = rows.get(p.n);
+      if (!row) {
+        const el = document.createElement("div");
+        el.className = "row";
+        el.innerHTML =
+          '<div class="head"><span class="name"></span>' +
+          '<span class="value"></span></div>' +
+          '<div class="bar"><div class="fill"></div></div>';
+        el.querySelector(".name").textContent = p.n;
+        container.appendChild(el);
+        row = { value: el.querySelector(".value"), fill: el.querySelector(".fill") };
+        rows.set(p.n, row);
+      }
+      row.value.textContent = p.t;
+      row.fill.style.width = (p.v * 100).toFixed(1) + "%";
+    }
+  };
+</script>
+</body>
 </html>"#;
 
 /// The live editor. Main-thread-only by construction (`Retained<WKWebView>`
 /// is `!Send`), which matches clap.gui's threading contract.
 pub(crate) struct GuiHandle {
     webview: Retained<WKWebView>,
+    /// Host + its timer vtable, kept to unregister on destroy. Null/None if
+    /// the host lacks clap.timer-support (the view then shows open-time
+    /// values only).
+    host: *const ClapHost,
+    host_timer: *const ClapHostTimerSupport,
+    timer_id: Option<ClapId>,
 }
 
 /// The GUI slot stored on `Instance`. `UnsafeCell` for the same reason as
@@ -181,13 +238,48 @@ unsafe extern "C" fn create<P: Plugin>(
     // SAFETY (objc2 contract): plain HTML string load, no base URL.
     unsafe { webview.loadHTMLString_baseURL(&NSString::from_str(HTML), None) };
 
-    *slot = Some(GuiHandle { webview });
+    // Refresh timer via clap.timer-support: the host calls on_timer() on the
+    // main thread; 33 ms ~ the 30 Hz the header promises hosts allow
+    // (ext/timer-support.h:19). No timer -> no live updates, degraded not
+    // broken.
+    let host = unsafe { instance::shared::<P>(plugin) }.host;
+    let (host_timer, timer_id) = register_refresh_timer(host);
+
+    *slot = Some(GuiHandle { webview, host, host_timer, timer_id });
     true
 }
 
-/// Detaches and drops the editor if present. Idempotent.
+/// Looks up clap.timer-support on the host and registers a ~30 Hz timer.
+/// SAFETY of the calls: [main-thread] (we are inside a gui callback), and
+/// host extension pointers are valid until destroy (host.h:20-25).
+fn register_refresh_timer(host: *const ClapHost) -> (*const ClapHostTimerSupport, Option<ClapId>) {
+    if host.is_null() {
+        return (std::ptr::null(), None);
+    }
+    // SAFETY: live host per the factory contract; get_extension is
+    // [thread-safe] and we are past plugin.init() (host.h:20-25).
+    let ext = unsafe { ((*host).get_extension)(host, CLAP_EXT_TIMER_SUPPORT.as_ptr()) };
+    if ext.is_null() {
+        return (std::ptr::null(), None);
+    }
+    let vtable = ext.cast::<ClapHostTimerSupport>();
+    let mut timer_id: ClapId = crate::ffi::CLAP_INVALID_ID;
+    // SAFETY: valid vtable from the host; out-param is ours.
+    let ok = unsafe { ((*vtable).register_timer)(host, 33, &raw mut timer_id) };
+    if ok { (vtable, Some(timer_id)) } else { (std::ptr::null(), None) }
+}
+
+/// Detaches, unregisters the refresh timer, and drops the editor if
+/// present. Idempotent.
 fn drop_handle(slot: &mut Option<GuiHandle>) {
     if let Some(handle) = slot.take() {
+        if let Some(timer_id) = handle.timer_id {
+            if !handle.host_timer.is_null() {
+                // SAFETY: [main-thread] (gui callback); vtable + host valid
+                // until plugin destroy; id came from register_timer.
+                unsafe { ((*handle.host_timer).unregister_timer)(handle.host, timer_id) };
+            }
+        }
         handle.webview.removeFromSuperview();
     }
 }
@@ -309,6 +401,10 @@ unsafe extern "C" fn show<P: Plugin>(plugin: *const ClapPlugin) -> bool {
         return false;
     };
     handle.webview.setHidden(false);
+    // Push once right away; if the page hasn't finished loading this is a
+    // harmless no-op and the timer covers it a tick later.
+    // SAFETY: live instance per `instance::shared`'s contract.
+    push_params::<P>(handle, unsafe { instance::shared::<P>(plugin) });
     true
 }
 
@@ -321,4 +417,65 @@ unsafe extern "C" fn hide<P: Plugin>(plugin: *const ClapPlugin) -> bool {
     };
     handle.webview.setHidden(true);
     true
+}
+
+/// Timer callbacks — the GUI's refresh clock. `on_timer` shares the gui
+/// slot's exclusivity class: it is `[main-thread]`
+/// (ext/timer-support.h:12), serialized with every other gui callback.
+pub(crate) struct TimerImpl<P>(PhantomData<P>);
+
+impl<P: Plugin> TimerImpl<P> {
+    pub(crate) const VTABLE: ClapPluginTimerSupport =
+        ClapPluginTimerSupport { on_timer: on_timer::<P> };
+    pub(crate) const VTABLE_REF: &'static ClapPluginTimerSupport = &Self::VTABLE;
+}
+
+/// `ext/timer-support.h:11-14` `[main-thread]`.
+unsafe extern "C" fn on_timer<P: Plugin>(plugin: *const ClapPlugin, timer_id: ClapId) {
+    // SAFETY: fn contract of gui_slot ([main-thread], serialized).
+    let slot = unsafe { gui_slot::<P>(plugin) };
+    let Some(handle) = slot.as_ref() else {
+        return;
+    };
+    if handle.timer_id != Some(timer_id) {
+        return;
+    }
+    // SAFETY: live instance per `instance::shared`'s contract.
+    push_params::<P>(handle, unsafe { instance::shared::<P>(plugin) });
+}
+
+/// Reads the SAME atomics the host's get_value reads (`param_bits` — one
+/// source of truth) and pushes them into the page. Main thread: the format!
+/// allocations here never touch the audio path.
+fn push_params<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
+    let mut json = String::from("[");
+    for (index, desc) in P::PARAMS.iter().enumerate() {
+        let value = f64::from_bits(inst.param_bits[index].load(Relaxed));
+        let text = plain_to_display(&desc.range, value).unwrap_or_else(|| "?".to_string());
+        let (min, max) = (desc.range.min(), desc.range.max());
+        let norm =
+            if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"n\":\"{}\",\"t\":\"{}\",\"v\":{norm:.4}}}",
+            escape_js(desc.name),
+            escape_js(&text),
+        ));
+    }
+    json.push(']');
+    let call = format!("window.__seco_update && window.__seco_update({json});");
+    // SAFETY (objc2 contract): main thread; completion handler omitted, we
+    // don't need the result (a not-yet-loaded page just ignores the call).
+    unsafe {
+        handle
+            .webview
+            .evaluateJavaScript_completionHandler(&NSString::from_str(&call), None);
+    }
+}
+
+/// Minimal JS string escaping for our own descriptor/label text.
+fn escape_js(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }

@@ -531,6 +531,30 @@ pub struct ClapHostGui {
     pub closed: unsafe extern "C" fn(host: *const ClapHost, was_destroyed: bool),
 }
 
+// --------------------------------------------------- ext/timer-support.h
+
+/// `CLAP_EXT_TIMER_SUPPORT` — `ext/timer-support.h:5`.
+pub const CLAP_EXT_TIMER_SUPPORT: &CStr = c"clap.timer-support";
+
+/// `clap_plugin_timer_support_t` — `ext/timer-support.h:11-14`.
+/// `on_timer` is `[main-thread]`.
+#[repr(C)]
+pub struct ClapPluginTimerSupport {
+    pub on_timer: unsafe extern "C" fn(plugin: *const ClapPlugin, timer_id: ClapId),
+}
+
+/// `clap_host_timer_support_t` — `ext/timer-support.h:16-27`. Both
+/// `[main-thread]`; "30 Hz should be allowed" (`:19`).
+#[repr(C)]
+pub struct ClapHostTimerSupport {
+    pub register_timer: unsafe extern "C" fn(
+        host: *const ClapHost,
+        period_ms: u32,
+        timer_id: *mut ClapId,
+    ) -> bool,
+    pub unregister_timer: unsafe extern "C" fn(host: *const ClapHost, timer_id: ClapId) -> bool,
+}
+
 // --------------------------------------------------------- ext/params.h
 
 /// `CLAP_EXT_PARAMS` — `ext/params.h:127`.

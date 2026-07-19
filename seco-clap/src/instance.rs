@@ -63,6 +63,11 @@ pub(crate) struct Instance<P: Plugin> {
     /// argument. Present only with the `gui` feature on macOS.
     #[cfg(all(feature = "gui", target_os = "macos"))]
     pub(crate) gui: crate::ext::gui::GuiSlot,
+    /// Host handle, used by the GUI to register its refresh timer. Valid
+    /// until after `destroy` (factory/plugin-factory.h:31). cfg-gated so
+    /// the no-gui build stays byte-identical.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    pub(crate) host: *const ClapHost,
     #[cfg(debug_assertions)]
     pub(crate) trace: std::sync::Arc<crate::trace::TransportTrace>,
     #[cfg(debug_assertions)]
@@ -126,6 +131,8 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
         }),
         #[cfg(all(feature = "gui", target_os = "macos"))]
         gui: crate::ext::gui::empty_slot(),
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        host,
         #[cfg(debug_assertions)]
         trace,
         #[cfg(debug_assertions)]
@@ -446,6 +453,12 @@ unsafe extern "C" fn plugin_get_extension<P: Plugin>(
         #[cfg(all(feature = "gui", target_os = "macos"))]
         if id == crate::ffi::CLAP_EXT_GUI {
             return (crate::ext::gui::GuiImpl::<P>::VTABLE_REF as *const crate::ffi::ClapPluginGui)
+                .cast();
+        }
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        if id == crate::ffi::CLAP_EXT_TIMER_SUPPORT {
+            return (crate::ext::gui::TimerImpl::<P>::VTABLE_REF
+                as *const crate::ffi::ClapPluginTimerSupport)
                 .cast();
         }
         ptr::null()

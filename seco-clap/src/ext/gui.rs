@@ -16,7 +16,7 @@
 //!   that already has a superview).
 //! - `destroy()` detaches from the parent before dropping the webview.
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::ffi::{CStr, c_char};
 use std::marker::PhantomData;
 
@@ -43,7 +43,7 @@ use crate::instance::{self, Instance};
 /// Fixed logical size for Phase 6.1 (cocoa is logical-pixel,
 /// ext/gui.h:56-57).
 const WIDTH: f64 = 480.0;
-const HEIGHT: f64 = 320.0;
+const HEIGHT: f64 = 470.0;
 
 /// Phase 6.1 page: a colored rectangle and the plugin name. Inline —
 /// served from the binary, no files, no network.
@@ -73,11 +73,16 @@ const HTML: &str = r#"<!DOCTYPE html>
     width: 100%; background: #3c3836; color: #ebdbb2;
     border: none; border-radius: 4px; padding: 4px;
   }
+  #curve {
+    width: 424px; height: 110px; display: block;
+    background: #282828; border-radius: 6px; margin-bottom: 6px;
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Zape</h1>
+  <canvas id="curve" width="848" height="220"></canvas>
   <div id="params"></div>
 </div>
 <script>
@@ -128,6 +133,29 @@ const HTML: &str = r#"<!DOCTYPE html>
     return { value: el.querySelector(".value"), control, kind: p.k, dragging };
   }
 
+  // The active curve's real table (the exact values the audio multiplies
+  // by), pushed by Rust only when the Curve preset changes.
+  window.__seco_curve = (pts) => {
+    const c = document.getElementById("curve");
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.beginPath();
+    const pad = 8;
+    for (let i = 0; i < pts.length; i++) {
+      const x = (i / (pts.length - 1)) * c.width;
+      const y = pad + (1 - pts[i]) * (c.height - 2 * pad);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = '#fabd2f';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.lineTo(c.width, c.height);
+    ctx.lineTo(0, c.height);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(250, 189, 47, 0.14)';
+    ctx.fill();
+  };
+
   // Pushed by Rust ~30 Hz. While the user is dragging a control we skip
   // refreshing it, so the timer echo never fights the pointer.
   window.__seco_update = (list) => {
@@ -159,6 +187,9 @@ pub(crate) struct GuiHandle {
     host: *const ClapHost,
     host_timer: *const ClapHostTimerSupport,
     timer_id: Option<ClapId>,
+    /// Last curve preset pushed to the canvas; the table is re-sent only
+    /// when this changes (1.6 KB on switch, zero steady-state).
+    last_curve: Cell<Option<usize>>,
 }
 
 /// The GUI slot stored on `Instance`. `UnsafeCell` for the same reason as
@@ -351,7 +382,14 @@ unsafe extern "C" fn create<P: Plugin>(
     let host = unsafe { instance::shared::<P>(plugin) }.host;
     let (host_timer, timer_id) = register_refresh_timer(host);
 
-    *slot = Some(GuiHandle { webview, controller, host, host_timer, timer_id });
+    *slot = Some(GuiHandle {
+        webview,
+        controller,
+        host,
+        host_timer,
+        timer_id,
+        last_curve: Cell::new(None),
+    });
     true
 }
 
@@ -519,7 +557,9 @@ unsafe extern "C" fn show<P: Plugin>(plugin: *const ClapPlugin) -> bool {
     // Push once right away; if the page hasn't finished loading this is a
     // harmless no-op and the timer covers it a tick later.
     // SAFETY: live instance per `instance::shared`'s contract.
-    push_params::<P>(handle, unsafe { instance::shared::<P>(plugin) });
+    let inst = unsafe { instance::shared::<P>(plugin) };
+    push_params::<P>(handle, inst);
+    push_curve_if_changed::<P>(handle, inst);
     true
 }
 
@@ -556,7 +596,9 @@ unsafe extern "C" fn on_timer<P: Plugin>(plugin: *const ClapPlugin, timer_id: Cl
         return;
     }
     // SAFETY: live instance per `instance::shared`'s contract.
-    push_params::<P>(handle, unsafe { instance::shared::<P>(plugin) });
+    let inst = unsafe { instance::shared::<P>(plugin) };
+    push_params::<P>(handle, inst);
+    push_curve_if_changed::<P>(handle, inst);
 }
 
 /// Reads the SAME atomics the host's get_value reads (`param_bits` — one
@@ -609,4 +651,65 @@ fn push_params<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
 /// Minimal JS string escaping for our own descriptor/label text.
 fn escape_js(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Finds the parameter that selects the shipped duck curves: the stepped
+/// param whose every label names one. Label-keyed on purpose — reordering
+/// params keeps working; renaming a label degrades to "no drawing" instead
+/// of drawing the wrong shape.
+fn curve_param_index<P: Plugin>() -> Option<usize> {
+    use seco_core::ParamRange;
+    P::PARAMS.iter().position(|desc| match desc.range {
+        ParamRange::Stepped { labels, .. } => {
+            !labels.is_empty() && labels.iter().all(|l| duck_by_label(l).is_some())
+        }
+        _ => false,
+    })
+}
+
+fn duck_by_label(label: &str) -> Option<seco_dsp::CurveTable> {
+    match label {
+        "Pump" => Some(seco_dsp::duck::pump()),
+        "Punch" => Some(seco_dsp::duck::punch()),
+        "Soft" => Some(seco_dsp::duck::soft()),
+        _ => None,
+    }
+}
+
+/// Sends the active curve's real table to the canvas — the same pure
+/// seco-dsp functions the plugin builds its audio tables from, so the
+/// drawing is bit-identical to what sounds. Sent only on change.
+fn push_curve_if_changed<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
+    use seco_core::ParamRange;
+    let Some(param_index) = curve_param_index::<P>() else {
+        return;
+    };
+    let value = f64::from_bits(inst.param_bits[param_index].load(Relaxed));
+    let ParamRange::Stepped { labels, .. } = &P::PARAMS[param_index].range else {
+        return;
+    };
+    let step = (value.round().max(0.0) as usize).min(labels.len() - 1);
+    if handle.last_curve.get() == Some(step) {
+        return;
+    }
+    let Some(table) = duck_by_label(labels[step]) else {
+        return;
+    };
+    let mut points = String::from("[");
+    for i in 0..=256 {
+        if i > 0 {
+            points.push(',');
+        }
+        let phase = (i as f32 / 256.0).min(0.999_999);
+        points.push_str(&format!("{:.3}", table.lookup(phase)));
+    }
+    points.push(']');
+    let call = format!("window.__seco_curve && window.__seco_curve({points});");
+    // SAFETY (objc2 contract): main thread; completion handler omitted.
+    unsafe {
+        handle
+            .webview
+            .evaluateJavaScript_completionHandler(&NSString::from_str(&call), None);
+    }
+    handle.last_curve.set(Some(step));
 }

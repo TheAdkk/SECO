@@ -59,6 +59,10 @@ pub(crate) struct Instance<P: Plugin> {
     /// state save) while the audio thread applies events. Slots beyond
     /// `P::PARAMS.len()` are unused.
     pub(crate) param_bits: [AtomicU64; MAX_PARAMS],
+    /// Editor slot; see `ext/gui.rs` for the main-thread-only exclusivity
+    /// argument. Present only with the `gui` feature on macOS.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    pub(crate) gui: crate::ext::gui::GuiSlot,
     #[cfg(debug_assertions)]
     pub(crate) trace: std::sync::Arc<crate::trace::TransportTrace>,
     #[cfg(debug_assertions)]
@@ -120,6 +124,8 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
                 P::PARAMS.get(index).map(|desc| desc.range.default_plain()).unwrap_or(0.0);
             AtomicU64::new(default.to_bits())
         }),
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        gui: crate::ext::gui::empty_slot(),
         #[cfg(debug_assertions)]
         trace,
         #[cfg(debug_assertions)]
@@ -437,6 +443,11 @@ unsafe extern "C" fn plugin_get_extension<P: Plugin>(
     } else if id == CLAP_EXT_STATE {
         (StateImpl::<P>::VTABLE_REF as *const ClapPluginState).cast()
     } else {
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        if id == crate::ffi::CLAP_EXT_GUI {
+            return (crate::ext::gui::GuiImpl::<P>::VTABLE_REF as *const crate::ffi::ClapPluginGui)
+                .cast();
+        }
         ptr::null()
     }
 }

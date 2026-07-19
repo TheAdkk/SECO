@@ -12,6 +12,8 @@ crate-type = ["cdylib"]
 # built by the `clap-wrapper` crate with cc, no cmake. Off by default: the
 # plain build ships CLAP only, and seco-core/seco-clap know nothing of this.
 vst3 = ["dep:clap-wrapper"]
+# Embedded WKWebView editor (macOS); see seco-clap's gui feature.
+gui = ["seco-clap/gui"]
 
 [dependencies]
 seco-core = { path = "../../seco-core" }

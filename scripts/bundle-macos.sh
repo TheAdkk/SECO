@@ -16,7 +16,10 @@ case "$MODE" in
   # extension tells hosts which face to load. Debug profile: keeps the
   # transport trace during the verification phase.
   vst3)    cargo build -p zape --features vst3; PROFILE=debug; EXT=vst3 ;;
-  *) echo "usage: $0 [release|debug|vst3]" >&2; exit 1 ;;
+  # Editor builds (WKWebView behind the gui feature, macOS only).
+  gui)     cargo build -p zape --features gui;          PROFILE=debug; EXT=clap ;;
+  vst3-gui) cargo build -p zape --features "vst3 gui";  PROFILE=debug; EXT=vst3 ;;
+  *) echo "usage: $0 [release|debug|vst3|gui|vst3-gui]" >&2; exit 1 ;;
 esac
 
 BUNDLE="target/zape.$EXT"

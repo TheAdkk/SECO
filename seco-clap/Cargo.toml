@@ -4,5 +4,33 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Embedded editor via clap.gui + a self-hosted WKWebView (macOS only for
+# now). Off by default: the plain build carries no GUI code and no ObjC
+# dependencies. The objc2 crates are typed bindings, not a GUI framework —
+# the UI itself is inline HTML/CSS/JS.
+gui = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
+    "dep:objc2-web-kit",
+]
+
 [dependencies]
 seco-core = { path = "../seco-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSString",
+    "NSGeometry",
+] }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSView",
+    "NSResponder",
+] }
+objc2-web-kit = { version = "0.3", optional = true, features = [
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "objc2-app-kit",
+] }

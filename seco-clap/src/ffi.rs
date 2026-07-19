@@ -423,6 +423,114 @@ pub struct ClapPluginState {
         unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapIStream) -> bool,
 }
 
+// ------------------------------------------------------------ ext/gui.h
+
+/// `CLAP_EXT_GUI` — `ext/gui.h:47`.
+pub const CLAP_EXT_GUI: &CStr = c"clap.gui";
+
+/// Window API constants — `ext/gui.h:54-68` (complete set).
+pub const CLAP_WINDOW_API_WIN32: &CStr = c"win32";
+/// `ext/gui.h:57`. Cocoa uses logical size; do not call `set_scale()`.
+pub const CLAP_WINDOW_API_COCOA: &CStr = c"cocoa";
+/// See [`CLAP_WINDOW_API_WIN32`].
+pub const CLAP_WINDOW_API_UIKIT: &CStr = c"uikit";
+/// See [`CLAP_WINDOW_API_WIN32`].
+pub const CLAP_WINDOW_API_X11: &CStr = c"x11";
+/// See [`CLAP_WINDOW_API_WIN32`].
+pub const CLAP_WINDOW_API_WAYLAND: &CStr = c"wayland";
+
+/// The handle union inside `clap_window` — `ext/gui.h:82-88`. For
+/// `"cocoa"` the payload is an `NSView *` (`clap_nsview`, `ext/gui.h:75`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union ClapWindowHandle {
+    pub cocoa: *mut c_void,
+    pub uikit: *mut c_void,
+    pub x11: std::ffi::c_ulong,
+    pub win32: *mut c_void,
+    pub ptr: *mut c_void,
+}
+
+/// `clap_window_t` — `ext/gui.h:79-89`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClapWindow {
+    pub api: *const c_char,
+    pub handle: ClapWindowHandle,
+}
+
+/// `clap_gui_resize_hints_t` — `ext/gui.h:91-103`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClapGuiResizeHints {
+    pub can_resize_horizontally: bool,
+    pub can_resize_vertically: bool,
+    pub preserve_aspect_ratio: bool,
+    pub aspect_ratio_width: u32,
+    pub aspect_ratio_height: u32,
+}
+
+/// `clap_plugin_gui_t` — `ext/gui.h:107-212`. Every method is
+/// `[main-thread]`; some additionally require embedded (`!floating`) or
+/// floating mode, quoted at each implementation site.
+#[repr(C)]
+pub struct ClapPluginGui {
+    pub is_api_supported: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        api: *const c_char,
+        is_floating: bool,
+    ) -> bool,
+    pub get_preferred_api: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        api: *mut *const c_char,
+        is_floating: *mut bool,
+    ) -> bool,
+    pub create: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        api: *const c_char,
+        is_floating: bool,
+    ) -> bool,
+    pub destroy: unsafe extern "C" fn(plugin: *const ClapPlugin),
+    pub set_scale: unsafe extern "C" fn(plugin: *const ClapPlugin, scale: f64) -> bool,
+    pub get_size: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> bool,
+    pub can_resize: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
+    pub get_resize_hints: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        hints: *mut ClapGuiResizeHints,
+    ) -> bool,
+    pub adjust_size: unsafe extern "C" fn(
+        plugin: *const ClapPlugin,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> bool,
+    pub set_size:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, width: u32, height: u32) -> bool,
+    pub set_parent:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, window: *const ClapWindow) -> bool,
+    pub set_transient:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, window: *const ClapWindow) -> bool,
+    pub suggest_title:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, title: *const c_char),
+    pub show: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
+    pub hide: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
+}
+
+/// `clap_host_gui_t` — `ext/gui.h:214-245`. Unused so far (Phase 6.1 has a
+/// fixed-size window); mirrored complete for later resize support.
+#[repr(C)]
+pub struct ClapHostGui {
+    pub resize_hints_changed: unsafe extern "C" fn(host: *const ClapHost),
+    pub request_resize:
+        unsafe extern "C" fn(host: *const ClapHost, width: u32, height: u32) -> bool,
+    pub request_show: unsafe extern "C" fn(host: *const ClapHost) -> bool,
+    pub request_hide: unsafe extern "C" fn(host: *const ClapHost) -> bool,
+    pub closed: unsafe extern "C" fn(host: *const ClapHost, was_destroyed: bool),
+}
+
 // --------------------------------------------------------- ext/params.h
 
 /// `CLAP_EXT_PARAMS` — `ext/params.h:127`.

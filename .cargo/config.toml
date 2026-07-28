@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask bundle zape --release` — see xtask/src/main.rs.
+xtask = "run --quiet --package xtask --"

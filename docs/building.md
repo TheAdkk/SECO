@@ -1,4 +1,4 @@
-# Building and installing zape
+# Building and installing plugins
 
 Prerequisites: stable Rust ≥ 1.85 (`rustup update stable`).
 
@@ -11,37 +11,34 @@ plus any directories in the `CLAP_PATH` environment variable:
 | Linux | `~/.clap` | `/usr/lib/clap` |
 | Windows | `%LOCALAPPDATA%\Programs\Common\CLAP` | `%COMMONPROGRAMFILES%\CLAP` |
 
-## macOS
+## Building
+
+One command per artifact, on every platform:
+
+```sh
+cargo xtask bundle zape --release            # -> target/zape.clap
+cargo xtask bundle zape --release --install  # ... and copy it where hosts look
+```
+
+Options: `--release` (default is debug), `--features <list>` (e.g. `gui`),
+`--vst3`, `--install`. `cargo xtask help` prints them.
 
 On macOS a `.clap` is a **bundle** (a directory with `Contents/MacOS/` and an
-`Info.plist`), not a renamed dylib. The script builds and assembles it:
+`Info.plist`), not a renamed dylib, and Apple Silicon refuses unsigned code —
+xtask assembles the directory and ad-hoc-signs it (`codesign -s -`). On Linux
+and Windows the artifact is the shared object under a `.clap` name.
+
+The `Info.plist` is not written by hand: xtask loads the freshly built
+binary the way a host does (`clap_entry` -> factory -> descriptor) and fills
+`CFBundleIdentifier`, `CFBundleName` and the version from what the plugin
+reports. `impl Plugin` stays the only place those strings are written.
+
+Installing by hand instead of `--install` is a copy into the table above:
 
 ```sh
-./scripts/bundle-macos.sh            # release build → target/zape.clap
-mkdir -p ~/Library/Audio/Plug-Ins/CLAP
-cp -R target/zape.clap ~/Library/Audio/Plug-Ins/CLAP/
-```
-
-The script ad-hoc-signs the bundle (`codesign -s -`); Apple Silicon refuses
-unsigned code.
-
-## Linux
-
-A `.clap` is a renamed shared object:
-
-```sh
-cargo build -p zape --release
-mkdir -p ~/.clap
-cp target/release/libzape.so ~/.clap/zape.clap
-```
-
-## Windows
-
-A `.clap` is a renamed DLL:
-
-```bat
-cargo build -p zape --release
-copy target\release\zape.dll "%LOCALAPPDATA%\Programs\Common\CLAP\zape.clap"
+cp -R target/zape.clap ~/Library/Audio/Plug-Ins/CLAP/     # macOS
+cp target/zape.clap ~/.clap/                              # Linux
+copy target\zape.clap "%LOCALAPPDATA%\Programs\Common\CLAP\zape.clap"   :: Windows
 ```
 
 ## VST3 (for hosts without CLAP support, e.g. Ableton Live)
@@ -53,9 +50,11 @@ seco-clap participate: the wrapper re-hosts the `clap_entry` the plugin
 already exports.
 
 ```sh
-./scripts/bundle-macos.sh vst3      # → target/zape.vst3
-cp -R target/zape.vst3 ~/Library/Audio/Plug-Ins/VST3/
+cargo xtask bundle zape --release --vst3 --install   # → target/zape.vst3
 ```
+
+The flag implies the `vst3` cargo feature: a `.vst3` bundle around a binary
+built without it is a bundle no host can load.
 
 Validate headless with [pluginval](https://github.com/Tracktion/pluginval):
 `pluginval --strictness-level 10 --validate target/zape.vst3`.

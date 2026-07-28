@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["seco-core", "seco-clap", "seco-dsp", "plugins/zape"]
+members = ["seco-core", "seco-clap", "seco-dsp", "plugins/zape", "xtask"]
 
 [workspace.package]
 version = "0.1.0"

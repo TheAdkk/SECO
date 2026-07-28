@@ -8,6 +8,7 @@
 
 mod custom;
 mod editor;
+mod library;
 
 use seco_clap::seco_export;
 use seco_core::{AudioBuffer, EditorPage, ParamDesc, ParamRange, Plugin, RtContext};
@@ -148,6 +149,10 @@ impl Plugin for Zape {
 
     fn editor_frame(scope: &[f32]) -> Option<String> {
         editor::frame(scope)
+    }
+
+    fn editor_message(text: &str) -> Option<String> {
+        editor::message(text)
     }
 
     fn new() -> Self {

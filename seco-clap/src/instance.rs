@@ -325,11 +325,15 @@ pub(crate) mod gui_queue {
         /// Opaque payload — the framework stores the bytes, the plugin
         /// decides what they mean.
         State(&'a str),
+        /// A request for the plugin to answer
+        /// (`Plugin::editor_message`).
+        Message(&'a str),
     }
 
     /// Wire format from JS, deliberately dumb: "begin <i>", "set <i>
-    /// <plain>", "end <i>", and "state <payload>" where the payload is the
-    /// rest of the message verbatim, spaces and all.
+    /// <plain>", "end <i>", "state <payload>" where the payload is the rest
+    /// of the message verbatim, spaces and all, and "msg <request>" for
+    /// anything the plugin answers itself.
     ///
     /// Lives here rather than next to the WebKit plumbing because the
     /// protocol is not platform-specific — this way it is tested on every
@@ -337,6 +341,9 @@ pub(crate) mod gui_queue {
     pub(crate) fn parse_msg(text: &str) -> Option<EditorMsg<'_>> {
         if let Some(block) = text.strip_prefix("state ") {
             return Some(EditorMsg::State(block));
+        }
+        if let Some(request) = text.strip_prefix("msg ") {
+            return Some(EditorMsg::Message(request));
         }
         // "state" with no payload is a legal message: it clears the block.
         if text == "state" {
@@ -1054,6 +1061,14 @@ mod tests {
         assert!(matches!(parse_msg("state"), Some(EditorMsg::State(""))));
         assert!(matches!(parse_msg("state "), Some(EditorMsg::State(""))));
 
+        // A request the plugin answers itself, taken verbatim after the
+        // verb: preset names have spaces in them.
+        assert!(matches!(
+            parse_msg("msg save kick 4x4|0,1"),
+            Some(EditorMsg::Message("save kick 4x4|0,1"))
+        ));
+        assert!(matches!(parse_msg("msg list"), Some(EditorMsg::Message("list"))));
+
         // Parameters still take their own path.
         assert!(matches!(
             parse_msg("set 2 0.5"),
@@ -1067,6 +1082,7 @@ mod tests {
         // Junk is dropped, not guessed at: this input comes from a webview.
         assert!(parse_msg("").is_none());
         assert!(parse_msg("stateful 1").is_none());
+        assert!(parse_msg("msgs 1").is_none());
         assert!(parse_msg("set 2 nan").is_none());
         assert!(parse_msg("set two 0.5").is_none());
         assert!(parse_msg("set 2").is_none());

@@ -88,6 +88,7 @@ pub(crate) struct HandlerIvars {
     plugin: *const ClapPlugin,
     enqueue: unsafe fn(*const ClapPlugin, instance::gui_queue::GuiMsg),
     publish_state: unsafe fn(*const ClapPlugin, &[u8]),
+    answer: unsafe fn(*const ClapPlugin, &str),
 }
 
 define_class!(
@@ -124,11 +125,38 @@ define_class!(
                     EditorMsg::State(block) => {
                         (self.ivars().publish_state)(self.ivars().plugin, block.as_bytes())
                     }
+                    EditorMsg::Message(request) => {
+                        (self.ivars().answer)(self.ivars().plugin, request)
+                    }
                 }
             };
         }
     }
 );
+
+/// Runs a page request through [`Plugin::editor_message`] and evaluates the
+/// answer back in the page.
+///
+/// # Safety
+///
+/// `plugin` must be a live instance, and this must run on the main thread
+/// (WebKit delivers script messages there).
+unsafe fn answer_editor_message<P: Plugin>(plugin: *const ClapPlugin, request: &str) {
+    let Some(answer) = P::editor_message(request) else {
+        return;
+    };
+    // SAFETY: fn contract of gui_slot (main thread, serialized with every
+    // other gui callback).
+    let Some(handle) = (unsafe { gui_slot::<P>(plugin) }).as_ref() else {
+        return;
+    };
+    // SAFETY (objc2 contract): main thread; completion handler omitted.
+    unsafe {
+        handle
+            .webview
+            .evaluateJavaScript_completionHandler(&NSString::from_str(&answer), None);
+    }
+}
 
 /// Assembles the gui vtable for a concrete plugin type.
 pub(crate) struct GuiImpl<P>(PhantomData<P>);
@@ -231,6 +259,7 @@ unsafe extern "C" fn create<P: Plugin>(
         plugin,
         enqueue: instance::queue_gui_param_change::<P>,
         publish_state: instance::publish_editor_state::<P>,
+        answer: answer_editor_message::<P>,
     });
     // SAFETY (objc2 contract): plain NSObject init on the allocated object.
     let handler: Retained<ParamMessageHandler> = unsafe { msg_send![super(handler), init] };

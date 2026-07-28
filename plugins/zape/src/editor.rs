@@ -15,6 +15,7 @@ use seco_core::EditorPage;
 use seco_dsp::duck;
 
 use crate::custom::CustomCurve;
+use crate::library;
 
 /// The editor Zape declares as `Plugin::EDITOR`. Fixed logical size (cocoa
 /// is logical-pixel, ext/gui.h:56-57).
@@ -77,6 +78,57 @@ pub(crate) fn frame(scope: &[f32]) -> Option<String> {
     Some(format!("window.__seco_scope && window.__seco_scope([{points}]);"))
 }
 
+/// Answers a request from the page: the curve library on disk.
+///
+/// Requests are `list`, `save <name>|<points>` and `delete <name>`. There is
+/// deliberately no `load`: the answer to `list` already carries every
+/// curve's points, so the page loads one by sending it back as a state
+/// block — the single path that also marks the session dirty.
+pub(crate) fn message(text: &str) -> Option<String> {
+    let (verb, rest) = text.split_once(' ').unwrap_or((text, ""));
+    match verb {
+        "list" => Some(presets_js()),
+        "save" => {
+            let (name, points) = rest.split_once('|')?;
+            library::save(name, CustomCurve::parse(points.as_bytes()));
+            // The list comes back either way: if the save failed, the page
+            // shows what is actually on disk rather than what it hoped.
+            Some(presets_js())
+        }
+        "delete" => {
+            library::delete(rest);
+            Some(presets_js())
+        }
+        _ => None,
+    }
+}
+
+/// The library as a `window.__seco_presets([...])` call, each entry
+/// carrying its points so the page can draw the shape rather than just name
+/// it.
+fn presets_js() -> String {
+    let mut list = String::from("[");
+    for (index, entry) in library::list().into_iter().enumerate() {
+        if index > 0 {
+            list.push(',');
+        }
+        list.push_str(&format!(
+            "{{n:\"{}\",p:[{}]}}",
+            escape(&entry.name),
+            entry.curve.to_wire()
+        ));
+    }
+    list.push(']');
+    format!("window.__seco_presets && window.__seco_presets({list});")
+}
+
+/// Names come from a text field and are pasted into a JS string literal.
+/// `library::sanitize` already reduced them to letters, digits, space, dash
+/// and underscore, so this is the belt to that pair of braces.
+fn escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+}
+
 /// Tempo assumed when drawing. The plugin uses the host's.
 const REFERENCE_BPM: f64 = 120.0;
 
@@ -125,7 +177,10 @@ const HTML: &str = r##"<!DOCTYPE html>
     user-select: none; -webkit-user-select: none;
     -webkit-font-smoothing: antialiased;
   }
-  body { display: flex; flex-direction: column; padding: 16px; box-sizing: border-box; gap: 12px; }
+  body {
+    display: flex; flex-direction: column; padding: 16px;
+    box-sizing: border-box; gap: 12px; position: relative;
+  }
   .bar { display: flex; align-items: center; gap: 8px; }
   .brand {
     font: 800 22px/1 -apple-system, sans-serif; letter-spacing: 0.14em;
@@ -169,13 +224,64 @@ const HTML: &str = r##"<!DOCTYPE html>
   .tile canvas { width: 100%; height: 30px; display: block; }
   .tile.on { background: var(--accent); }
   body.bypassed .display, body.bypassed .tiles, body.bypassed .knobwrap { opacity: 0.35; }
+
+  /* The curve library, over everything while it is open. */
+  .browser {
+    position: absolute; inset: 12px; z-index: 5; display: none;
+    flex-direction: column; gap: 10px; padding: 14px; box-sizing: border-box;
+    background: #0e0e0e; border-radius: 10px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  }
+  body.browsing .browser { display: flex; }
+  .browser .head { display: flex; align-items: center; gap: 10px; }
+  .browser .head span {
+    font-weight: 700; letter-spacing: 0.12em; font-size: 12px; margin-right: auto;
+  }
+  .cards {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    overflow-y: auto; flex: 1; align-content: start;
+  }
+  .card {
+    position: relative; background: var(--panel); border-radius: 8px;
+    padding: 6px; cursor: pointer; transition: background 90ms;
+  }
+  .card:hover { background: var(--panel-hi); }
+  .card canvas { width: 100%; height: 42px; display: block; }
+  .card .label {
+    display: block; font-size: 11px; margin-top: 3px; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card .kill {
+    position: absolute; top: 2px; right: 5px; font-size: 12px; line-height: 1;
+    opacity: 0.35; padding: 2px 4px; border-radius: 4px;
+  }
+  .card .kill:hover { opacity: 1; }
+  .card .kill.armed { opacity: 1; background: #b03030; color: #fff; }
+  .empty { color: #5a5a5a; font-size: 12px; padding: 8px 2px; }
+  .saverow { display: flex; gap: 8px; }
+  .saverow input {
+    flex: 1; background: #1e1e1e; border: none; border-radius: 6px;
+    color: var(--text); padding: 7px 10px; font: inherit; outline: none;
+  }
+  .saverow input:focus { background: #262626; }
 </style>
 </head>
 <body>
   <div class="bar">
     <div class="brand">ZAPE</div>
     <div class="seg" id="rate"></div>
+    <div class="pill" id="curves">CURVES</div>
     <div class="pill" id="bypass">BYPASS</div>
+  </div>
+  <div class="browser">
+    <div class="head">
+      <span>CURVE LIBRARY</span>
+      <div class="pill" id="browser-close">CLOSE</div>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="saverow">
+      <input id="preset-name" maxlength="48" placeholder="name this curve" spellcheck="false">
+      <div class="pill" id="preset-save">SAVE</div>
+    </div>
   </div>
   <div class="main">
     <div class="knobwrap">
@@ -519,6 +625,92 @@ const HTML: &str = r##"<!DOCTYPE html>
   knob.addEventListener('pointerup', endDrag);
   knob.addEventListener('pointercancel', endDrag);
 
+  // ---- the curve library ------------------------------------------------
+  // Saved curves live on disk; the plugin answers `msg` requests with the
+  // whole list, points included, so a card can draw the shape rather than
+  // just name it. Loading one sends it straight back as a state block —
+  // the same path the drawing uses, so the session is marked dirty and the
+  // curve travels with the project whether or not the library does.
+  const browser = document.querySelector('.browser');
+
+  window.__seco_presets = (list) => {
+    const cards = document.getElementById('cards');
+    cards.textContent = '';
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'Nothing saved yet. Draw a curve, name it, hit SAVE.';
+      cards.appendChild(empty);
+      return;
+    }
+    list.forEach((preset) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const canvas = document.createElement('canvas');
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = preset.n;
+      const kill = document.createElement('span');
+      kill.className = 'kill';
+      kill.textContent = '\u00d7';
+      card.appendChild(canvas);
+      card.appendChild(label);
+      card.appendChild(kill);
+      cards.appendChild(card);
+
+      canvas.width = canvas.clientWidth * 2;
+      canvas.height = canvas.clientHeight * 2;
+      // The saved shape, drawn with the same sampling as the big display.
+      const saved = customPoints;
+      customPoints = preset.p;
+      stroke(canvas.getContext('2d'), sampleCustom(), 1, '#6a6a6a', 3, false);
+      customPoints = saved;
+
+      card.addEventListener('click', () => {
+        customPoints = preset.p.slice();
+        paintedSelection = -1;
+        draw();
+        sendCustom(true);
+        // Loading a curve means using it.
+        gesture(CURVE, CURVE_CUSTOM);
+        document.getElementById('preset-name').value = preset.n;
+      });
+
+      // Two clicks to delete: no confirm() — a webview dialog with no
+      // delegate behind it goes nowhere.
+      kill.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (!kill.classList.contains('armed')) {
+          kill.classList.add('armed');
+          kill.textContent = 'sure?';
+          setTimeout(() => {
+            kill.classList.remove('armed');
+            kill.textContent = '\u00d7';
+          }, 2500);
+          return;
+        }
+        post('msg delete ' + preset.n);
+      });
+    });
+  };
+
+  document.getElementById('curves').addEventListener('click', () => {
+    document.body.classList.add('browsing');
+    post('msg list');
+  });
+  document.getElementById('browser-close').addEventListener('click', () => {
+    document.body.classList.remove('browsing');
+  });
+  document.getElementById('preset-save').addEventListener('click', () => {
+    const field = document.getElementById('preset-name');
+    const name = field.value.trim();
+    if (!name || !customPoints) return;
+    post('msg save ' + name + '|' + customPoints.map((p) => p.toFixed(3)).join(','));
+  });
+  document.getElementById('preset-name').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') document.getElementById('preset-save').click();
+  });
+
   // ---- drawing the custom curve -----------------------------------------
   // Sweeping paints: the point nearest the pointer follows it, so a drag
   // across the display draws a shape rather than moving one handle.
@@ -652,10 +844,60 @@ mod tests {
             "{harness}<script>{}</script>",
             frame(&scope).expect("frame")
         );
+        // A library with a couple of curves, and the browser open, so the
+        // preview shows the part with an interaction to check.
+        let mock = "<script>\n\
+             document.body.classList.add('browsing');\n\
+             window.__seco_presets([\n\
+             {n:'kick 4x4',p:[0,0.1,0.3,0.5,0.7,0.85,0.95,1,1,1,1,1,1,1,1,1]},\n\
+             {n:'reverse swell',p:[0,0.9,0.8,0.7,0.6,0.5,0.45,0.5,0.6,0.7,0.8,0.9,1,1,1,1]},\n\
+             {n:'gate 8th',p:[0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1]}\n\
+             ]);\n\
+             </script>";
+        let harness = format!("{harness}{mock}");
         let page = HTML.replace("</body>", &format!("{harness}</body>"));
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/zape-editor.html");
         std::fs::write(out, page).expect("write preview");
         println!("wrote {out}");
+    }
+
+    /// The library requests the page can make, end to end through the disk.
+    #[test]
+    fn the_page_can_list_save_and_delete_curves() {
+        let _library = crate::library::TempLibrary::new("editor-messages");
+        let drawn = "0,0.9,0.2,0.4,0.6,0.8,1,1,1,0.5,0.5,0.5,1,1,1,1";
+
+        // Nothing saved: an empty list, not a failure.
+        let empty = message("list").expect("list answers");
+        assert!(empty.contains("__seco_presets([])"), "{empty}");
+
+        let saved = message(&format!("save kick 4x4|{drawn}")).expect("save answers");
+        assert!(saved.contains("kick 4x4"), "{saved}");
+        // The answer carries the points, so a card can draw the shape
+        // instead of only naming it.
+        assert!(saved.contains("0.900"), "the answer must carry the curve: {saved}");
+
+        let deleted = message("delete kick 4x4").expect("delete answers");
+        assert!(deleted.contains("__seco_presets([])"), "{deleted}");
+
+        // Anything else is dropped rather than guessed at: this comes from
+        // a webview.
+        assert!(message("drop everything").is_none());
+        assert!(message("save no-separator").is_none());
+        assert!(message("").is_none());
+    }
+
+    /// A name is pasted into a JS string literal. `library::sanitize`
+    /// already reduces it to letters, digits, space, dash and underscore,
+    /// and this is the second wall.
+    #[test]
+    fn preset_names_cannot_break_out_of_the_answer() {
+        let _library = crate::library::TempLibrary::new("editor-escape");
+        let drawn = "0,0.9,0.2,0.4,0.6,0.8,1,1,1,0.5,0.5,0.5,1,1,1,1";
+        message(&format!("save \"];alert(1);[\"|{drawn}")).expect("save answers");
+        let listed = message("list").expect("list answers");
+        assert!(!listed.contains("alert(1)"), "{listed}");
+        assert!(listed.starts_with("window.__seco_presets && window.__seco_presets(["));
     }
 
     /// Which shape is active is the page's business — the snippet carries

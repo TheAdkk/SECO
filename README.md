@@ -157,6 +157,39 @@ The page samples the drawn curve with the plugin's own interpolation *and*
 its dip-entry fade, so the line under the handles is the gain the audio
 gets, not an illustration of it.
 
+### The curve library, and where presets are allowed to live
+
+Drawn curves save to disk — one small file each, under
+`~/Library/Application Support/SECO/Zape/curves` (macOS), `$XDG_CONFIG_HOME`
+or `~/.config/seco/zape/curves` (Linux), `%APPDATA%\SECO\Zape\curves`
+(Windows), overridable with `SECO_ZAPE_CURVES`.
+
+One rule comes before the feature: **the curve in use lives in the session,
+not in the library.** `clap.state` already carries it, so a project sounds
+the same on a machine that has never seen the directory. The library is a
+drawer to pull shapes out of, never the source of truth for how a track
+sounds — a plugin whose presets live only on disk is a plugin that sounds
+different when you send the project to someone else.
+
+The plumbing is a third editor channel, `Plugin::editor_message`: the page
+sends `msg <request>`, the plugin answers with JavaScript that the adapter
+evaluates back into it. Main thread, so it may allocate and do I/O; no
+`self`, because the plugin instance belongs to the audio thread. It
+deliberately cannot change the plugin's state — `load` is not a request at
+all. The answer to `list` carries every curve's points, so the page draws
+the shapes *and* loads one by sending it back as a state block, keeping
+every state change on the single path that also marks the session dirty.
+
+Writing to a user's disk is the one thing here that leaves the process, so
+the name typed into the webview goes through an allowlist rather than a
+blocklist: letters, digits, space, dash and underscore survive, everything
+else becomes a dash. That takes `../../.bashrc`, an embedded NUL, a Windows
+reserved name and a 300-character title out of play in one rule, and the
+tests check that a traversing save lands inside the directory and a
+traversing delete leaves a bystander file alone. Saves go to a temporary
+file and are renamed, which is atomic on all three platforms: a crash
+mid-write leaves the previous curve rather than half of a new one.
+
 ### The picture of the audio (a deliberately weak channel)
 
 The editor draws the incoming signal behind the curve, which means the

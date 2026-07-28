@@ -50,6 +50,26 @@ pub trait Plugin: Send + 'static {
         None
     }
 
+    /// Answers a message from the editor that is neither a parameter nor a
+    /// state block — "list the saved presets", "write this one to disk".
+    ///
+    /// Runs on the main thread, so it may allocate and do I/O. It takes no
+    /// `self`: the plugin instance belongs to the audio thread (see
+    /// [`Plugin::apply_state`]), so this is for work that does not need it.
+    ///
+    /// The returned string is evaluated in the page, which makes this a
+    /// request/response channel: the page asks, the plugin answers by
+    /// calling a function the page defines.
+    ///
+    /// Note what it deliberately cannot do: change the plugin's state. A
+    /// handler that wants to must answer with a snippet that has the page
+    /// send a state block back, so every state change keeps going through
+    /// the one path that also tells the host the session is dirty.
+    fn editor_message(text: &str) -> Option<String> {
+        let _ = text;
+        None
+    }
+
     /// Per-refresh data for the editor, as JavaScript to evaluate.
     ///
     /// Unlike [`Plugin::editor_script`] this is evaluated *every* refresh

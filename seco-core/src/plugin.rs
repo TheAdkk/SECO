@@ -36,16 +36,41 @@ pub trait Plugin: Send + 'static {
     /// page.
     ///
     /// Called on the main thread at the editor's refresh rate with the
-    /// current plain parameter values (same order as [`Plugin::PARAMS`]),
-    /// never from `process()` — allocation is fine here. The adapter
-    /// evaluates the snippet only when it differs from the one it sent last,
+    /// current plain parameter values (same order as [`Plugin::PARAMS`])
+    /// and the current state block (the same bytes
+    /// [`Plugin::apply_state`] receives, so the page and the audio draw
+    /// from one source), never from `process()` — allocation is fine here.
+    /// The adapter evaluates the snippet only when it differs from the last,
     /// so returning the same string every tick costs nothing on the wire.
     ///
     /// The parameter values themselves are already pushed by the adapter;
     /// this is for everything else the page needs to draw.
-    fn editor_script(params: &[f64]) -> Option<String> {
-        let _ = params;
+    fn editor_script(params: &[f64], state: &[u8]) -> Option<String> {
+        let _ = (params, state);
         None
+    }
+
+    /// Applies a block of plugin-owned state — anything that does not fit
+    /// in a parameter, such as a drawn curve.
+    ///
+    /// The adapter owns the block, not the plugin: both `clap.state`
+    /// callbacks run on the main thread and may overlap `process()`, so
+    /// asking a live plugin for its bytes there would be unsound. The block
+    /// is therefore delivered *here*, on the audio thread, immediately
+    /// before the `process()` call that follows a change — session load,
+    /// preset change, or an editor edit.
+    ///
+    /// Same rules as [`Plugin::process`]: no allocation, no locks, no I/O.
+    /// Parse into storage prepared in [`Plugin::activate`].
+    ///
+    /// An empty slice is a value, not "nothing happened": it means the
+    /// session carried no block, and whatever was loaded before must be
+    /// reset to defaults.
+    ///
+    /// Nothing calls this until a plugin has state to publish; the default
+    /// ignores it.
+    fn apply_state(&mut self, state: &[u8], rt: &RtContext) {
+        let _ = (state, rt);
     }
 
     /// Creates an instance. Runs on the main thread; allocation is fine here.

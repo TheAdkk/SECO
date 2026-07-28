@@ -61,6 +61,11 @@ pub(crate) struct Instance<P: Plugin> {
     /// See the module docs: `&mut P` is only materialized inside callbacks
     /// whose exclusivity CLAP guarantees.
     state: UnsafeCell<P>,
+    /// The plugin's own state block and its hand-off to the audio thread.
+    /// Adapter-owned for the same reason as `param_bits`: `clap.state` runs
+    /// on the main thread while `process()` may be running. See
+    /// `plugin_state`.
+    pub(crate) plugin_state: crate::plugin_state::PluginStateSlot,
     /// Plain parameter values as f64 bit patterns, indexed like
     /// `P::PARAMS`. Atomics because the main thread reads them (`get_value`,
     /// state save) while the audio thread applies events. Slots beyond
@@ -150,6 +155,7 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
             on_main_thread: plugin_on_main_thread,
         },
         state: UnsafeCell::new(P::new()),
+        plugin_state: crate::plugin_state::PluginStateSlot::new(),
         param_bits: std::array::from_fn(|index| {
             let default =
                 P::PARAMS.get(index).map(|desc| desc.range.default_plain()).unwrap_or(0.0);
@@ -676,6 +682,11 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
     // atomics, never `state`. Exclusive.
     let state = unsafe { &mut *inst.state.get() };
     with_rt_context(transport, &params_snapshot[..P::PARAMS.len()], |rt| {
+        // A state block published since the last block lands here, on the
+        // audio thread, before the plugin processes with it — see
+        // `plugin_state` for why the main thread cannot deliver it itself.
+        // SAFETY: `[audio-thread]`, the single consumer.
+        unsafe { inst.plugin_state.take_with(|bytes| state.apply_state(bytes, rt)) };
         state.process(&mut audio, rt)
     });
     CLAP_PROCESS_CONTINUE
@@ -725,12 +736,16 @@ mod tests {
     use seco_core::{ParamDesc, ParamRange, RtContext};
 
     use super::*;
+    use crate::ffi::{ClapIStream, ClapOStream};
 
     /// The single plugin type used by every test in this crate: the
     /// descriptor storage is one static (one plugin per binary), so tests
     /// must not mix plugin types.
     struct HalfGain {
         last_transport: Option<Transport>,
+        /// Whatever `apply_state` last delivered, and how many times.
+        applied: Option<Vec<u8>>,
+        applications: usize,
     }
 
     impl Plugin for HalfGain {
@@ -744,7 +759,14 @@ mod tests {
         }];
 
         fn new() -> Self {
-            HalfGain { last_transport: None }
+            HalfGain { last_transport: None, applied: None, applications: 0 }
+        }
+
+        fn apply_state(&mut self, state: &[u8], _rt: &RtContext) {
+            // A real plugin parses into storage from activate(); a Vec here
+            // is fine because these tests never arm the allocation detector.
+            self.applied = Some(state.to_vec());
+            self.applications += 1;
         }
 
         fn process(&mut self, audio: &mut AudioBuffer, rt: &RtContext) {
@@ -793,6 +815,175 @@ mod tests {
             in_events,
             out_events: ptr::null(),
         }
+    }
+
+    /// A `clap_ostream` collecting into a Vec, and a `clap_istream`
+    /// handing bytes back a few at a time — hosts are allowed to do that
+    /// (stream.h:10-16) and clap-validator does.
+    struct SaveSink(Vec<u8>);
+
+    unsafe extern "C" fn sink_write(
+        stream: *const ClapOStream,
+        buffer: *const std::ffi::c_void,
+        size: u64,
+    ) -> i64 {
+        // SAFETY: ctx is the SaveSink we installed; buffer holds `size`
+        // bytes for the call.
+        unsafe {
+            let sink = &mut *(*stream).ctx.cast::<SaveSink>();
+            let bytes = std::slice::from_raw_parts(buffer.cast::<u8>(), size as usize);
+            sink.0.extend_from_slice(bytes);
+        }
+        size as i64
+    }
+
+    struct LoadSource {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    unsafe extern "C" fn source_read(
+        stream: *const ClapIStream,
+        buffer: *mut std::ffi::c_void,
+        size: u64,
+    ) -> i64 {
+        // SAFETY: ctx is the LoadSource we installed; buffer is valid for
+        // `size` bytes.
+        unsafe {
+            let source = &mut *(*stream).ctx.cast::<LoadSource>();
+            // Deliberately dribble: 7 bytes at a time exercises the loop.
+            let n = (source.bytes.len() - source.offset).min(size as usize).min(7);
+            std::ptr::copy_nonoverlapping(
+                source.bytes.as_ptr().add(source.offset),
+                buffer.cast::<u8>(),
+                n,
+            );
+            source.offset += n;
+            n as i64
+        }
+    }
+
+    fn save_state(plugin: *const ClapPlugin) -> Vec<u8> {
+        let mut sink = SaveSink(Vec::new());
+        let stream =
+            ClapOStream { ctx: (&raw mut sink).cast(), write: sink_write };
+        // SAFETY: live instance; the stream outlives the call.
+        let ok = unsafe {
+            (StateImpl::<HalfGain>::VTABLE.save)(plugin, &raw const stream)
+        };
+        assert!(ok, "save failed");
+        sink.0
+    }
+
+    fn load_state(plugin: *const ClapPlugin, bytes: Vec<u8>) -> bool {
+        let mut source = LoadSource { bytes, offset: 0 };
+        let stream =
+            ClapIStream { ctx: (&raw mut source).cast(), read: source_read };
+        // SAFETY: live instance; the stream outlives the call.
+        unsafe { (StateImpl::<HalfGain>::VTABLE.load)(plugin, &raw const stream) }
+    }
+
+    /// Runs one silent block, which is where a published state block is
+    /// delivered to the plugin.
+    fn run_one_block(plugin: *const ClapPlugin) {
+        let mut left = vec![0.0_f32; 8];
+        let mut right = vec![0.0_f32; 8];
+        let mut ptrs = [left.as_mut_ptr(), right.as_mut_ptr()];
+        let mut out = stereo_buffer(&mut ptrs);
+        let process = process_struct(8, None, &raw mut out, ptr::null(), ptr::null());
+        // SAFETY: live instance; everything referenced outlives the call.
+        unsafe { ((*plugin).process)(plugin, &raw const process) };
+    }
+
+    /// The point of the whole mechanism: a block stored on one instance
+    /// comes back on another, and reaches the plugin on the audio thread
+    /// rather than through a main-thread `&mut`.
+    #[test]
+    fn plugin_state_survives_save_and_load() {
+        let saver = create::<HalfGain>(ptr::null());
+        let block = b"curve:0.1,0.2,0.3".to_vec();
+        // SAFETY: [main-thread] role, single-threaded test.
+        assert!(unsafe { shared::<HalfGain>(saver).plugin_state.publish(&block) });
+        let blob = save_state(saver);
+        // SAFETY: created above, not used again.
+        unsafe { ((*saver).destroy)(saver) };
+
+        let loader = create::<HalfGain>(ptr::null());
+        assert!(load_state(loader, blob));
+        // Nothing reaches the plugin until it processes: the main thread
+        // must not touch plugin state.
+        // SAFETY: single-threaded test, no other borrow live.
+        assert!(unsafe { state_of(loader) }.applied.is_none());
+
+        run_one_block(loader);
+        // SAFETY: as above.
+        let state = unsafe { state_of(loader) };
+        assert_eq!(state.applied.as_deref(), Some(block.as_slice()));
+        assert_eq!(state.applications, 1);
+
+        // And it is delivered once, not on every block.
+        run_one_block(loader);
+        // SAFETY: as above.
+        assert_eq!(unsafe { state_of(loader) }.applications, 1);
+        // SAFETY: created above, not used again.
+        unsafe { ((*loader).destroy)(loader) };
+    }
+
+    /// A session saved before the plugin had a state block must *clear* it,
+    /// not leave the previous one in place — otherwise loading an old
+    /// preset inherits whatever the last one drew.
+    #[test]
+    fn a_version_1_state_clears_the_plugin_block() {
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: [main-thread] role, single-threaded test.
+        assert!(unsafe { shared::<HalfGain>(plugin).plugin_state.publish(b"stale") });
+        run_one_block(plugin);
+
+        // A hand-built v1 blob: magic, version 1, one parameter, no block.
+        let mut blob = b"SECO".to_vec();
+        blob.extend_from_slice(&1_u16.to_le_bytes());
+        blob.extend_from_slice(&1_u16.to_le_bytes());
+        blob.extend_from_slice(&0_u32.to_le_bytes());
+        blob.extend_from_slice(&0.25_f64.to_bits().to_le_bytes());
+        assert!(load_state(plugin, blob));
+        run_one_block(plugin);
+
+        // SAFETY: single-threaded test, no other borrow live.
+        let state = unsafe { state_of(plugin) };
+        assert_eq!(state.applied.as_deref(), Some(&[][..]), "the old block must be cleared");
+        assert_eq!(state.applications, 2);
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// A corrupt or hostile length must fail the load, not truncate the
+    /// block or read past the blob.
+    #[test]
+    fn a_lying_block_length_fails_the_load() {
+        let plugin = create::<HalfGain>(ptr::null());
+        let mut header = b"SECO".to_vec();
+        header.extend_from_slice(&2_u16.to_le_bytes());
+        header.extend_from_slice(&0_u16.to_le_bytes());
+
+        // Longer than the blob actually carries.
+        let mut truncated = header.clone();
+        truncated.extend_from_slice(&64_u32.to_le_bytes());
+        truncated.extend_from_slice(b"short");
+        assert!(!load_state(plugin, truncated));
+
+        // Longer than the slot can ever hold.
+        let mut oversized = header.clone();
+        oversized.extend_from_slice(&(crate::MAX_PLUGIN_STATE as u32 + 1).to_le_bytes());
+        assert!(!load_state(plugin, oversized));
+
+        // Missing the length word entirely.
+        assert!(!load_state(plugin, header));
+
+        run_one_block(plugin);
+        // SAFETY: single-threaded test, no other borrow live.
+        assert_eq!(unsafe { state_of(plugin) }.applications, 0, "a failed load must publish nothing");
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
     }
 
     #[test]

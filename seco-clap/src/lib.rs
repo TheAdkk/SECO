@@ -16,11 +16,13 @@ pub mod ffi;
 mod alloc;
 mod export;
 mod instance;
+mod plugin_state;
 #[cfg(debug_assertions)]
 mod trace;
 mod util;
 
 pub use alloc::RtAllocCheck;
+pub use plugin_state::MAX_PLUGIN_STATE;
 
 /// Capacity of the per-instance parameter storage. `seco_export!` rejects
 /// plugins declaring more at compile time.

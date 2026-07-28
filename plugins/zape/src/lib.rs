@@ -101,7 +101,7 @@ impl Plugin for Zape {
 
     const EDITOR: Option<EditorPage> = Some(editor::PAGE);
 
-    fn editor_script(params: &[f64]) -> Option<String> {
+    fn editor_script(params: &[f64], _state: &[u8]) -> Option<String> {
         editor::script(params)
     }
 

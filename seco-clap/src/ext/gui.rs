@@ -554,7 +554,14 @@ fn push_script<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
     for (slot, bits) in values.iter_mut().zip(&inst.param_bits).take(P::PARAMS.len()) {
         *slot = f64::from_bits(bits.load(Relaxed));
     }
-    let Some(script) = P::editor_script(&values[..P::PARAMS.len()]) else {
+    // The page draws from the same block the audio thread applies.
+    // SAFETY: `[main-thread]` — every gui callback is, and the timer's
+    // on_timer with them (ext/timer-support.h:12).
+    let script = unsafe {
+        inst.plugin_state
+            .with_latest(|block| P::editor_script(&values[..P::PARAMS.len()], block))
+    };
+    let Some(script) = script else {
         return;
     };
     let mut last = handle.last_script.borrow_mut();

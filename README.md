@@ -84,6 +84,42 @@ exclusivity CLAP itself guarantees, each with the guarantee cited. A
 barrier-synchronized test races `get_value` against `process()` under miri's
 data-race detector (`get_value_races_process_without_ub`).
 
+### Plugin state that does not fit in a parameter
+
+A drawn curve is 257 floats; parameters are 32 numbers. The obvious API —
+"ask the plugin for its bytes in `clap.state.save`" — is unsound for the
+same reason `get_value` was: both state callbacks are `[main-thread]`
+(ext/state.h:25-33) and may run while the audio thread is inside
+`process()`, so materializing `&mut P` there is two live `&mut` over one
+instance.
+
+So the adapter owns the block, exactly as it already owns parameter values.
+The main thread reads and writes it (session load, and the editor); the
+audio thread receives it inside `process()` through `Plugin::apply_state`.
+Nothing is ever read back out of a live plugin at an unsafe moment.
+
+The hand-off is a triple buffer: three preallocated slots and one atomic
+index, where `back`, `front` and `shared` always hold a permutation of
+`{0,1,2}`. Each side moves an index by swapping it *through* `shared`, so
+no interleaving can put both on the same slot, the audio thread never
+waits, and nothing allocates.
+
+Both swaps are `AcqRel`, and miri is why. With a plain `Release` on the
+producer the handshake only models one direction — publishing writes to the
+consumer — and misses the other: the index that comes *back* out of the
+swap is a slot the consumer was reading, which the next `publish` writes
+into. miri called it immediately: *"Data race detected between (1)
+non-atomic read on thread ... and (2) retag write of type
+`plugin_state::Chunk`"*. `publish_races_take_without_ub` runs the crossing
+under the race detector and checks every delivered block is one that was
+actually written, never a torn mix of two.
+
+State format v2 appends the block after the parameter entries. Version 1
+blobs still load, and an absent block is published as an *empty* one rather
+than left alone: a preset saved before a plugin grew a curve must clear
+that curve, not inherit whatever was drawn last
+(`a_version_1_state_clears_the_plugin_block`).
+
 ### The unsafe audit (two real UB holes)
 
 Auditing every `unsafe` against *hostile-but-legal* host inputs — instead of

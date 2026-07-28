@@ -3,10 +3,17 @@
 //! Required, not optional: hosts should refuse to save/restore parameters
 //! for plugins without this extension (ext/params.h:101-107).
 //!
-//! Format, little-endian: magic `"SECO"`, `u16` version (= 1), `u16` entry
-//! count, then per entry a `u32` parameter index and the `f64` plain value
-//! as bits. Unknown indices are skipped on load (a newer state in an older
+//! Format, little-endian: magic `"SECO"`, `u16` version, `u16` entry count,
+//! then per entry a `u32` parameter index and the `f64` plain value as
+//! bits. Unknown indices are skipped on load (a newer state in an older
 //! plugin); absent ones keep their current value.
+//!
+//! Version 2 appends the plugin's own state block — a `u32` length and that
+//! many bytes (see `plugin_state`). Version 1 blobs still load: they simply
+//! carry no block, which is *not* the same as leaving the current one
+//! alone. A preset saved before a plugin grew a drawn curve must clear that
+//! curve, or loading it would inherit whatever was there before, so an
+//! absent block is published as an empty one.
 
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering::Relaxed;
@@ -26,7 +33,10 @@ impl<P: Plugin> StateImpl<P> {
 }
 
 const MAGIC: [u8; 4] = *b"SECO";
-const VERSION: u16 = 1;
+/// Written by `save`. `load` also accepts every older version listed here.
+const VERSION: u16 = 2;
+/// Oldest version `load` understands.
+const MIN_VERSION: u16 = 1;
 const ENTRY_BYTES: usize = 4 + 8;
 /// Sanity ceiling for incoming state blobs; ours are tens of bytes.
 const MAX_STATE_BYTES: usize = 1 << 20;
@@ -42,7 +52,7 @@ unsafe extern "C" fn save<P: Plugin>(
     // SAFETY: live instance per `instance::shared`'s contract.
     let inst = unsafe { instance::shared::<P>(plugin) };
 
-    let mut bytes = Vec::with_capacity(8 + P::PARAMS.len() * ENTRY_BYTES);
+    let mut bytes = Vec::with_capacity(12 + P::PARAMS.len() * ENTRY_BYTES);
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
     bytes.extend_from_slice(&(P::PARAMS.len() as u16).to_le_bytes());
@@ -50,6 +60,16 @@ unsafe extern "C" fn save<P: Plugin>(
         bytes.extend_from_slice(&(index as u32).to_le_bytes());
         bytes.extend_from_slice(&inst.param_bits[index].load(Relaxed).to_le_bytes());
     }
+    // The plugin's block, straight from the adapter's master copy. Nothing
+    // is asked of the plugin here: `save` is [main-thread] and the audio
+    // thread may be inside process().
+    // SAFETY: `[main-thread]` per ext/state.h:25-28.
+    unsafe {
+        inst.plugin_state.with_latest(|block| {
+            bytes.extend_from_slice(&(block.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(block);
+        })
+    };
 
     // Streams may accept fewer bytes than offered: loop (stream.h:10-16).
     let mut written = 0;
@@ -106,7 +126,8 @@ unsafe extern "C" fn load<P: Plugin>(
     if bytes.len() < 8 || bytes[0..4] != MAGIC {
         return false;
     }
-    if u16::from_le_bytes([bytes[4], bytes[5]]) != VERSION {
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if !(MIN_VERSION..=VERSION).contains(&version) {
         return false;
     }
     let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
@@ -124,5 +145,30 @@ unsafe extern "C" fn load<P: Plugin>(
             inst.param_bits[index].store(u64::from_le_bytes(value_bytes), Relaxed);
         }
     }
+
+    // The plugin block, or an empty one for a version that predates it.
+    let block = match read_block(&bytes, 8 + count * ENTRY_BYTES, version) {
+        Some(block) => block,
+        None => return false,
+    };
+    // SAFETY: `[main-thread]` per ext/state.h:30-33; the audio thread picks
+    // the block up in its next process().
+    if !unsafe { inst.plugin_state.publish(block) } {
+        return false;
+    }
     true
+}
+
+/// Reads the plugin block that follows the parameter entries. A truncated
+/// or oversized length is a corrupt blob, not a block to guess at.
+fn read_block(bytes: &[u8], offset: usize, version: u16) -> Option<&[u8]> {
+    if version < 2 {
+        return Some(&[]);
+    }
+    let header = bytes.get(offset..offset + 4)?;
+    let len = u32::from_le_bytes(header.try_into().ok()?) as usize;
+    if len > crate::MAX_PLUGIN_STATE {
+        return None;
+    }
+    bytes.get(offset + 4..offset + 4 + len)
 }

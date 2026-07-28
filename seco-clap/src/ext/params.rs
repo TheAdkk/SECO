@@ -54,6 +54,14 @@ fn step_index(value: f64, len: usize) -> usize {
     (value.round().max(0.0) as usize).min(len.saturating_sub(1))
 }
 
+/// Formats a continuous value for display: fixed decimals plus the unit.
+/// Rounding is display-only — the stored value keeps full precision — so
+/// `text_to_value` after this is a *round trip of the text*, not of the
+/// value: "50%" reads back as exactly 50, which formats to "50%" again.
+fn continuous_text(value: f64, unit: &str, decimals: u8) -> String {
+    format!("{:.*}{unit}", decimals as usize, value)
+}
+
 /// Display formatting for the GUI. Deliberately a *copy* of the logic in
 /// `value_to_text` rather than a shared helper: routing the host path
 /// through a helper changed the no-gui binary, and the byte-identity
@@ -63,7 +71,9 @@ fn step_index(value: f64, len: usize) -> usize {
 #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
 pub(crate) fn plain_to_display(range: &ParamRange, value: f64) -> Option<String> {
     match range {
-        ParamRange::Continuous { .. } => Some(format!("{value}")),
+        ParamRange::Continuous { unit, decimals, .. } => {
+            Some(continuous_text(value, unit, *decimals))
+        }
         ParamRange::Stepped { labels, .. } => {
             labels.get(step_index(value, labels.len())).map(|label| (*label).to_string())
         }
@@ -142,9 +152,11 @@ unsafe extern "C" fn get_value<P: Plugin>(
 
 /// `ext/params.h:275-284` `[main-thread]`.
 ///
-/// Continuous values use `format!("{value}")` — Rust's shortest round-trip
-/// representation — so `text_to_value(value_to_text(v)) == v` exactly.
-/// Allocation is fine here: main thread.
+/// Continuous values are rounded to the parameter's declared decimals and
+/// carry its unit, because this text is what hosts and the editor show —
+/// `0.5046999999999999` is a correct number and a useless readout. The
+/// round trip that matters is text -> value -> text, which is stable
+/// (see `continuous_text`). Allocation is fine here: main thread.
 unsafe extern "C" fn value_to_text<P: Plugin>(
     _plugin: *const ClapPlugin,
     param_id: ClapId,
@@ -159,7 +171,9 @@ unsafe extern "C" fn value_to_text<P: Plugin>(
         return false;
     }
     let text = match &desc.range {
-        ParamRange::Continuous { .. } => format!("{value}"),
+        ParamRange::Continuous { unit, decimals, .. } => {
+            continuous_text(value, unit, *decimals)
+        }
         ParamRange::Stepped { labels, .. } => {
             let Some(label) = labels.get(step_index(value, labels.len())) else {
                 return false;
@@ -205,7 +219,11 @@ unsafe extern "C" fn text_to_value<P: Plugin>(
             t if t.eq_ignore_ascii_case("off") => Some(0.0),
             t => t.parse::<f64>().ok(),
         },
-        ParamRange::Continuous { .. } => text.parse::<f64>().ok(),
+        // The unit is optional on input: hosts round-trip our own text
+        // ("50%"), users type "50".
+        ParamRange::Continuous { unit, .. } => {
+            text.strip_suffix(unit).unwrap_or(text).trim().parse::<f64>().ok()
+        }
     };
     let Some(value) = parsed.filter(|v| v.is_finite()) else {
         return false;
@@ -257,7 +275,23 @@ mod tests {
         const PARAMS: &'static [ParamDesc] = &[
             ParamDesc {
                 name: "Cont",
-                range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5 },
+                range: ParamRange::Continuous {
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.5,
+                    unit: "",
+                    decimals: 2,
+                },
+            },
+            ParamDesc {
+                name: "Pct",
+                range: ParamRange::Continuous {
+                    min: 0.0,
+                    max: 100.0,
+                    default: 100.0,
+                    unit: "%",
+                    decimals: 0,
+                },
             },
             ParamDesc {
                 name: "Step",
@@ -272,6 +306,71 @@ mod tests {
         fn process(&mut self, _audio: &mut AudioBuffer, _rt: &RtContext) {}
     }
 
+    /// Reads a parameter's display text through the host entry point.
+    fn text_of(id: ClapId, value: f64) -> String {
+        let mut buffer = [0 as c_char; 64];
+        // SAFETY: value_to_text never touches the plugin pointer; the out
+        // buffer is ours with the stated capacity.
+        let ok = unsafe {
+            (ParamsImpl::<TextOnly>::VTABLE.value_to_text)(
+                std::ptr::null(),
+                id,
+                value,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+            )
+        };
+        assert!(ok, "value_to_text failed for param {id} value {value}");
+        // SAFETY: value_to_text NUL-terminated the buffer.
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap().to_string()
+    }
+
+    /// Parses display text back through the host entry point.
+    fn value_of(id: ClapId, text: &str) -> Option<f64> {
+        let input = std::ffi::CString::new(text).unwrap();
+        let mut value = f64::NAN;
+        // SAFETY: text_to_value never touches the plugin pointer; both
+        // pointers are ours and valid for the call.
+        let ok = unsafe {
+            (ParamsImpl::<TextOnly>::VTABLE.text_to_value)(
+                std::ptr::null(),
+                id,
+                input.as_ptr(),
+                &raw mut value,
+            )
+        };
+        ok.then_some(value)
+    }
+
+    /// A parameter's readout is the plugin's job, not the host's: an
+    /// automated percentage arrives as 50.469999999999999 and must read as
+    /// "50%", in the DAW and in the editor alike.
+    #[test]
+    fn continuous_values_display_rounded_with_their_unit() {
+        assert_eq!(text_of(1, 50.469_999_999_999_99), "50%");
+        assert_eq!(text_of(1, 0.0), "0%");
+        assert_eq!(text_of(1, 100.0), "100%");
+        // Two decimals, no unit, on the other continuous parameter.
+        assert_eq!(text_of(0, 0.123_456_789), "0.12");
+    }
+
+    /// Rounding the text must not make the parameter lossy in the host's
+    /// hands: whatever we print, we must read back, and printing that again
+    /// must not drift.
+    #[test]
+    fn display_text_round_trips_through_text_to_value() {
+        for value in [0.0, 0.4, 12.5, 50.469_999_999_999_99, 99.6, 100.0] {
+            let text = text_of(1, value);
+            let parsed = value_of(1, &text).expect("our own text must parse");
+            assert_eq!(text_of(1, parsed), text, "value {value} drifted on re-display");
+        }
+        // Typed by hand, without the unit, and out of range.
+        assert_eq!(value_of(1, "50"), Some(50.0));
+        assert_eq!(value_of(1, "  75 % "), Some(75.0));
+        assert_eq!(value_of(1, "140"), Some(100.0));
+        assert_eq!(value_of(1, "nope"), None);
+    }
+
     /// `plain_to_display` (used by the GUI) is a deliberate copy of the
     /// `value_to_text` formatting so the no-gui binary stays byte-identical.
     /// This test is the leash: if the copies ever diverge, it fails.
@@ -283,14 +382,17 @@ mod tests {
             (0, 0.123456789),
             (0, 1.0),
             (1, 0.0),
-            (1, 1.0),
-            (1, 1.4),
-            (1, 2.0),
-            (1, 7.0),
+            (1, 50.469_999_999_999_99),
+            (1, 100.0),
             (2, 0.0),
-            (2, 0.49),
-            (2, 0.5),
             (2, 1.0),
+            (2, 1.4),
+            (2, 2.0),
+            (2, 7.0),
+            (3, 0.0),
+            (3, 0.49),
+            (3, 0.5),
+            (3, 1.0),
         ];
         for &(id, value) in cases {
             let mut buffer = [0 as c_char; 64];

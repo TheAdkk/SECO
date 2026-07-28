@@ -22,6 +22,11 @@ pub struct ParamDesc {
 #[derive(Clone, Copy, Debug)]
 pub enum ParamRange {
     /// A continuous value in `[min, max]`.
+    ///
+    /// The plain value is what the user sees: a "percent" parameter has the
+    /// range `0..=100`, not `0..=1` scaled at display time. Hosts show plain
+    /// values in automation lanes and generic editors, so a hidden display
+    /// scale would make the plugin and the host disagree.
     Continuous {
         /// Lower bound (finite).
         min: f64,
@@ -29,6 +34,13 @@ pub enum ParamRange {
         max: f64,
         /// Initial value, within `[min, max]`.
         default: f64,
+        /// Suffix appended when displaying, e.g. `"%"`, `" dB"`, `" ms"`.
+        /// Empty for a bare number. Parsing accepts the value with or
+        /// without it.
+        unit: &'static str,
+        /// Decimal places shown. `0` displays whole numbers — the value
+        /// still automates continuously, only its *text* is rounded.
+        decimals: u8,
     },
     /// An enumerated value: plain value `n` means `labels[n]`. Every label
     /// must be non-empty (hosts render them).

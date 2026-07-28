@@ -19,21 +19,32 @@ correctness work documented below.
 | Crate | Role | `unsafe` |
 |---|---|---|
 | `seco-core` | Plugin traits and audio types. Zero dependencies, zero FFI. A `Plugin` compiles without knowing any host ABI exists. | `#![forbid(unsafe_code)]` |
-| `seco-clap` | The CLAP adapter: hand-written `#[repr(C)]` mirrors of the CLAP 1.2.10 headers (pinned at commit `195b42a`), entry point, factory, params/state/audio-ports extensions. | The only crate with `unsafe`; every block carries a `SAFETY:` comment citing the header line it relies on |
-| `seco-dsp` | Allocation-free DSP utilities: one-pole smoother, curve lookup tables. Pure functions, unit-tested without a host. | `#![forbid(unsafe_code)]` |
-| `plugins/zape` | The plugin: multiplies audio by a gain curve indexed by the host's beat position. No sidechain input, no signal analysis. | none |
+| `seco-clap` | The CLAP adapter: hand-written `#[repr(C)]` mirrors of the CLAP 1.2.10 headers (pinned at commit `195b42a`), entry point, factory, params/state/audio-ports/gui extensions. | The only crate with `unsafe` in the shipped binary; every block carries a `SAFETY:` comment citing the header line it relies on |
+| `seco-dsp` | Allocation-free DSP utilities: slew limiter, one-pole smoother, curve lookup tables, the ducking shapes. Pure functions, unit-tested without a host. | `#![forbid(unsafe_code)]` |
+| `plugins/zape` | The plugin: multiplies audio by a gain curve indexed by the host's beat position, plus its editor page. No sidechain input, no signal analysis. | none |
+| `xtask` | Build tasks (`cargo xtask bundle zape --release --install`): builds the crate and assembles the platform artifact. Not shipped, not linked into any plugin. | `dlopen`/`dlsym` only, to read the built plugin's own descriptor |
 
 Build and install: [docs/building.md](docs/building.md). CLAP header findings
 with citations and the empirical transport results: [docs/clap-notes.md](docs/clap-notes.md).
+
+A plugin is `impl Plugin` plus `seco_export!(T)`; everything else — the entry
+symbol, the bundle, the `Info.plist` — is the framework's job. The bundle
+metadata is read back out of the compiled plugin (`clap_entry` → factory →
+descriptor), so `impl Plugin` is the only place a plugin's identifier, name
+and version are written.
 
 ## Zape
 
 Tempo-synced ducking ("ghost kick"): `gain = curve(phase)` where `phase` is
 the host's beat position folded into a cycle. Four parameters: **Rate**
-(1/1 … 1/16), **Mix**, **Curve** (Pump / Punch / Soft), **Bypass**. Edge
+(1/1 … 1/16), **Mix**, **Curve** (15 shapes: single dips of varying
+recovery, gated holds, and 2/3/4-per-cycle patterns), **Bypass**. Every
+shape puts its floor exactly on the beat and closes the cycle seam at the
+floor, by construction — see the click saga below for why that sentence is
+the whole design. Edge
 cases are handled from evidence, not guesses: hosts freeze the beat position
 when stopped (Zape keeps free-running), loop wraps jump it backward without
-interpolation (Zape resyncs hard and glides the gain), and hosts without a
+interpolation (Zape resyncs hard and ramps the gain), and hosts without a
 tempo get 120 BPM.
 
 ## The technical part
@@ -90,33 +101,56 @@ the well-formed ones tests naturally construct — found two:
   duplicate pointers collapse to one processed slice.
   (`duplicate_channel_pointers_process_once`)
 
-### The click saga (three bugs, three fail-first tests)
+### The click saga (four bugs, four fail-first tests)
 
-All three were found by ear in REAPER, then reproduced as failing tests
-before fixing — the numbers below are from those red runs:
+All four were found by ear in a DAW, then reproduced as failing tests before
+fixing — the numbers below are from those red runs:
 
-1. **The seam.** The first curve shapes ended the cycle at gain 1.0 and
-   began it at 0.0: a full-scale step at every phase wrap, a click per
-   cycle. `duck_curves_close_the_seam` failed with `|f(0) − f(1)| = 1`;
-   the shapes now close at 1.0 by construction, with the dip inside the
-   cycle. A follow-up invariant (`duck_lands_near_the_beat`) pins the
-   opposite failure: an attack drawn too wide parks ~36 ms of full volume
-   after every beat before the duck lands.
-2. **The start-up overshoot.** The gain smoother initialized at 1.0 while
-   the curve at the starting phase rarely is: the first ~10 ms played loud.
-   `first_sample_starts_on_the_curve_not_at_unity` failed at `0.9906` vs
-   the expected `0.0975`; the smoother now snaps onto the curve's actual
+1. **The seam.** The first shapes ended the cycle at gain 1.0 and began it
+   at 0.0: a full-scale step at every phase wrap, a click per cycle. The
+   test failed with `|f(0) − f(1)| = 1`.
+2. **The start-up overshoot.** The gain state initialized at 1.0 while the
+   shape at the starting phase rarely is: the first ~10 ms played loud.
+   `first_sample_starts_on_the_curve_not_at_unity` failed at `0.9906` vs the
+   expected `0.0975`; the gain now snaps onto the shape's actual
    first-sample target — on fresh streams only.
 3. **`reset()` mid-stream.** Hosts flush FX around transport changes; the
    session log showed REAPER calling `reset()` on *every* play start
    (`rst=25` in one session). Re-arming the start snap there turned a
    transport jump into a one-sample gain step of `0.424` — a click.
    `reset_plus_jump_glides_instead_of_clicking` pinned it; `reset()` now
-   keeps the smoother's value and lets the glide absorb the jump.
+   keeps the current gain and lets the ramp absorb the jump.
+4. **The fix for (1) caused a tick of its own.** Closing the seam at gain
+   1.0 put *unity on the beat*: the transient the duck exists to make room
+   for passed at full level and was cut a moment later — ~5 ms above 0.9
+   gain, then a 25 ms slam, at 95 BPM / rate 1/2. Worse, the entry was drawn
+   in phase, so its real duration scaled with tempo and rate: 25 ms at 1/2,
+   ~3 ms at 1/16, and the fast end clicked outright.
 
-A host-realistic offline scan (`click_scan_diagnostic`) measures the worst
-per-sample gain step across curves and rates: steady playback tops out at
-`0.00686` — attack slope, no discontinuity.
+The fourth one is why a shape is no longer a sampled cycle. It is now a
+*recovery* plus the phases where dips happen (`DuckShape`), with the entry
+into each dip applied at play time as a fade of a fixed duration in
+**seconds**. That inverts the invariants:
+
+- the floor lands exactly on the beat — the seam closes at 0.0 on both
+  sides of every dip, structurally, with nothing to declick
+  (`every_shape_is_down_on_the_beat`, `shapes_close_the_seam_at_the_floor`);
+- the entry takes the same 5 ms at any tempo and rate
+  (`the_fade_holds_at_any_tempo_and_rate`, run at 1/16 @ 200 BPM / 44.1 kHz
+  through 1/1 @ 60 BPM / 96 kHz).
+
+Following that with a one-pole smoother then made the duck land *late*: a
+smoother lags everything by about its time constant, so the gain was still
+at `0.33` on the beat. It was replaced by a slew-rate limiter, which is
+transparent while the shape moves within the limit — the curve arrives on
+time — and only intervenes on what actually clicks: parameter flips,
+transport jumps, preset changes.
+
+The result is a bound rather than a measurement. The offline scan
+(`click_scan_diagnostic`) reports the same worst per-sample step,
+`0.00655`, for *every* scenario — steady playback at any rate, every
+parameter flip, transport jumps, `reset()` — because that number is the
+limiter's ceiling, not luck.
 
 ## Formats, honestly
 
@@ -144,8 +178,6 @@ claims compatibility and uses no Steinberg branding.
 - Stereo only (`MAX_CHANNELS = 2`); one plugin per binary (the descriptor
   storage is a single static, enforced by the duplicate `clap_entry` link
   error).
-- Curve attacks are drawn in phase, so their absolute duration scales with
-  rate and tempo.
 - Buffer safety assumes hosts don't hand *partially* overlapping in/out
   buffers (exact in-place aliasing is handled; partial overlap is a host
   contract violation, documented at the `SAFETY:` site).

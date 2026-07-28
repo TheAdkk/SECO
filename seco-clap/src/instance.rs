@@ -699,8 +699,11 @@ unsafe extern "C" fn plugin_get_extension<P: Plugin>(
     } else if id == CLAP_EXT_STATE {
         (StateImpl::<P>::VTABLE_REF as *const ClapPluginState).cast()
     } else {
+        // A plugin without `Plugin::EDITOR` has no page to show: stay silent
+        // about clap.gui rather than hand the host a vtable that refuses
+        // every call.
         #[cfg(all(feature = "gui", target_os = "macos"))]
-        if id == crate::ffi::CLAP_EXT_GUI {
+        if id == crate::ffi::CLAP_EXT_GUI && P::EDITOR.is_some() {
             return (crate::ext::gui::GuiImpl::<P>::VTABLE_REF as *const crate::ffi::ClapPluginGui)
                 .cast();
         }
@@ -737,7 +740,7 @@ mod tests {
         const VERSION: &'static str = "0.0.0";
         const PARAMS: &'static [ParamDesc] = &[ParamDesc {
             name: "Test",
-            range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5 },
+            range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5, unit: "", decimals: 2 },
         }];
 
         fn new() -> Self {

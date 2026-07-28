@@ -1,4 +1,4 @@
-use crate::{AudioBuffer, ParamDesc, RtContext};
+use crate::{AudioBuffer, EditorPage, ParamDesc, RtContext};
 
 /// A SECO audio plugin.
 ///
@@ -25,6 +25,28 @@ pub trait Plugin: Send + 'static {
     /// so treat the slice as append-only (see [`ParamDesc`]). Current values
     /// arrive in `process()` via [`RtContext::param`].
     const PARAMS: &'static [ParamDesc] = &[];
+
+    /// The plugin's editor, or `None` (the default) for no editor. The
+    /// adapter only advertises `clap.gui` when this is `Some` — a plugin
+    /// owns its own page; the framework owns the window, the lifecycle and
+    /// the parameter plumbing. See [`EditorPage`].
+    const EDITOR: Option<EditorPage> = None;
+
+    /// Plugin-specific data for the editor, as JavaScript to evaluate in the
+    /// page.
+    ///
+    /// Called on the main thread at the editor's refresh rate with the
+    /// current plain parameter values (same order as [`Plugin::PARAMS`]),
+    /// never from `process()` — allocation is fine here. The adapter
+    /// evaluates the snippet only when it differs from the one it sent last,
+    /// so returning the same string every tick costs nothing on the wire.
+    ///
+    /// The parameter values themselves are already pushed by the adapter;
+    /// this is for everything else the page needs to draw.
+    fn editor_script(params: &[f64]) -> Option<String> {
+        let _ = params;
+        None
+    }
 
     /// Creates an instance. Runs on the main thread; allocation is fine here.
     fn new() -> Self;

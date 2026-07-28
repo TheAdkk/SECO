@@ -16,7 +16,7 @@
 //!   that already has a superview).
 //! - `destroy()` detaches from the parent before dropping the webview.
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{RefCell, UnsafeCell};
 use std::ffi::{CStr, c_char};
 use std::marker::PhantomData;
 
@@ -29,7 +29,7 @@ use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
     WKWebViewConfiguration,
 };
-use seco_core::Plugin;
+use seco_core::{EditorPage, Plugin};
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -40,138 +40,16 @@ use crate::ffi::{
 };
 use crate::instance::{self, Instance};
 
-/// Fixed logical size for Phase 6.1 (cocoa is logical-pixel,
-/// ext/gui.h:56-57).
-const WIDTH: f64 = 480.0;
-const HEIGHT: f64 = 470.0;
-
-/// Phase 6.1 page: a colored rectangle and the plugin name. Inline —
-/// served from the binary, no files, no network.
-const HTML: &str = r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  html, body {
-    margin: 0;
-    height: 100%;
-    background: #1d2021;
-    font-family: -apple-system, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-    color: #ebdbb2;
-  }
-  .wrap { padding: 24px 28px; }
-  h1 { color: #fabd2f; font-size: 28px; letter-spacing: 0.08em; margin: 0 0 18px 0; }
-  .row { margin: 14px 0; }
-  .head { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
-  .name { opacity: 0.8; }
-  .value { color: #fabd2f; font-variant-numeric: tabular-nums; }
-  input[type=range] { width: 100%; accent-color: #fabd2f; margin: 0; }
-  select, input[type=checkbox] { accent-color: #fabd2f; }
-  select {
-    width: 100%; background: #3c3836; color: #ebdbb2;
-    border: none; border-radius: 4px; padding: 4px;
-  }
-  #curve {
-    width: 424px; height: 110px; display: block;
-    background: #282828; border-radius: 6px; margin-bottom: 6px;
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>Zape</h1>
-  <canvas id="curve" width="848" height="220"></canvas>
-  <div id="params"></div>
-</div>
-<script>
-  const post = (m) => window.webkit.messageHandlers.seco.postMessage(m);
-  const container = document.getElementById("params");
-  const rows = new Map();
-
-  function buildRow(i, p) {
-    const el = document.createElement("div");
-    el.className = "row";
-    el.innerHTML = '<div class="head"><span class="name"></span>' +
-                   '<span class="value"></span></div>';
-    el.querySelector(".name").textContent = p.n;
-    let control, dragging = { on: false };
-    if (p.k === "s") {
-      control = document.createElement("select");
-      for (let step = 0; step < p.opts.length; step++) {
-        const opt = document.createElement("option");
-        opt.value = step;
-        opt.textContent = p.opts[step];
-        control.appendChild(opt);
-      }
-      // A select change is an atomic gesture.
-      control.addEventListener("change", () => {
-        post("begin " + i); post("set " + i + " " + control.value); post("end " + i);
-      });
-    } else if (p.k === "t") {
-      control = document.createElement("input");
-      control.type = "checkbox";
-      control.addEventListener("change", () => {
-        post("begin " + i);
-        post("set " + i + " " + (control.checked ? 1 : 0));
-        post("end " + i);
-      });
-    } else {
-      control = document.createElement("input");
-      control.type = "range";
-      control.min = 0; control.max = 1000; control.step = 1;
-      control.addEventListener("pointerdown", () => { dragging.on = true; post("begin " + i); });
-      control.addEventListener("pointerup", () => { dragging.on = false; post("end " + i); });
-      control.addEventListener("input", () => {
-        const plain = p.min + (control.value / 1000) * (p.max - p.min);
-        post("set " + i + " " + plain);
-      });
-    }
-    el.appendChild(control);
-    container.appendChild(el);
-    return { value: el.querySelector(".value"), control, kind: p.k, dragging };
-  }
-
-  // The active curve's real table (the exact values the audio multiplies
-  // by), pushed by Rust only when the Curve preset changes.
-  window.__seco_curve = (pts) => {
-    const c = document.getElementById("curve");
-    const ctx = c.getContext("2d");
-    ctx.clearRect(0, 0, c.width, c.height);
-    ctx.beginPath();
-    const pad = 8;
-    for (let i = 0; i < pts.length; i++) {
-      const x = (i / (pts.length - 1)) * c.width;
-      const y = pad + (1 - pts[i]) * (c.height - 2 * pad);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    }
-    ctx.strokeStyle = '#fabd2f';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    ctx.lineTo(c.width, c.height);
-    ctx.lineTo(0, c.height);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(250, 189, 47, 0.14)';
-    ctx.fill();
-  };
-
-  // Pushed by Rust ~30 Hz. While the user is dragging a control we skip
-  // refreshing it, so the timer echo never fights the pointer.
-  window.__seco_update = (list) => {
-    list.forEach((p, i) => {
-      let row = rows.get(p.n);
-      if (!row) { row = buildRow(i, p); rows.set(p.n, row); }
-      row.value.textContent = p.t;
-      if (row.dragging.on) return;
-      if (row.kind === "s") row.control.value = Math.round(p.v * (p.opts.length - 1));
-      else if (row.kind === "t") row.control.checked = p.v >= 0.5;
-      else row.control.value = Math.round(p.v * 1000);
-    });
-  };
-</script>
-</body>
-</html>"#;
+/// The plugin's page, or `None` when it declares no editor — in which case
+/// every entry point here refuses and the host never sees `clap.gui`
+/// (`instance::plugin_get_extension`).
+///
+/// The page itself belongs to the plugin (`Plugin::EDITOR`): this file owns
+/// the window, the lifecycle and the parameter plumbing, and knows nothing
+/// about what is drawn.
+fn page<P: Plugin>() -> Option<EditorPage> {
+    P::EDITOR
+}
 
 /// The live editor. Main-thread-only by construction (`Retained<WKWebView>`
 /// is `!Send`), which matches clap.gui's threading contract.
@@ -187,9 +65,10 @@ pub(crate) struct GuiHandle {
     host: *const ClapHost,
     host_timer: *const ClapHostTimerSupport,
     timer_id: Option<ClapId>,
-    /// Last curve preset pushed to the canvas; the table is re-sent only
-    /// when this changes (1.6 KB on switch, zero steady-state).
-    last_curve: Cell<Option<usize>>,
+    /// Last snippet `Plugin::editor_script` produced. Re-evaluated only when
+    /// it changes, so a plugin can return the same string every tick (the
+    /// comparison happens here; the wire stays quiet).
+    last_script: RefCell<Option<String>>,
 }
 
 /// The GUI slot stored on `Instance`. `UnsafeCell` for the same reason as
@@ -263,16 +142,16 @@ pub(crate) struct GuiImpl<P>(PhantomData<P>);
 
 impl<P: Plugin> GuiImpl<P> {
     pub(crate) const VTABLE: ClapPluginGui = ClapPluginGui {
-        is_api_supported,
+        is_api_supported: is_api_supported::<P>,
         get_preferred_api,
         create: create::<P>,
         destroy: destroy::<P>,
         set_scale,
-        get_size,
+        get_size: get_size::<P>,
         can_resize,
         get_resize_hints,
         adjust_size,
-        set_size,
+        set_size: set_size::<P>,
         set_parent: set_parent::<P>,
         set_transient,
         suggest_title,
@@ -291,13 +170,14 @@ unsafe fn gui_slot<'a, P: Plugin>(plugin: *const ClapPlugin) -> &'a mut Option<G
     unsafe { &mut *instance::shared::<P>(plugin).gui.get() }
 }
 
-/// `ext/gui.h:108-111` `[main-thread]`. Embedded cocoa only.
-unsafe extern "C" fn is_api_supported(
+/// `ext/gui.h:108-111` `[main-thread]`. Embedded cocoa only, and only for a
+/// plugin that actually declares a page.
+unsafe extern "C" fn is_api_supported<P: Plugin>(
     _plugin: *const ClapPlugin,
     api: *const c_char,
     is_floating: bool,
 ) -> bool {
-    if api.is_null() || is_floating {
+    if api.is_null() || is_floating || page::<P>().is_none() {
         return false;
     }
     // SAFETY: host passes one of its NUL-terminated api strings.
@@ -334,6 +214,9 @@ unsafe extern "C" fn create<P: Plugin>(
     if is_floating || api.is_null() || unsafe { CStr::from_ptr(api) } != CLAP_WINDOW_API_COCOA {
         return false;
     }
+    let Some(page) = page::<P>() else {
+        return false;
+    };
     // clap.gui is [main-thread]; if a host violates that, refuse rather
     // than let AppKit abort us.
     let Some(mtm) = MainThreadMarker::new() else {
@@ -343,7 +226,10 @@ unsafe extern "C" fn create<P: Plugin>(
     // old editor instead of leaking or double-attaching it.
     drop_handle(slot);
 
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, HEIGHT));
+    let frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(f64::from(page.width), f64::from(page.height)),
+    );
     // SAFETY (objc2 contract): default-constructing a WKWebViewConfiguration
     // on the main thread, immediately consumed by the webview init below.
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -373,7 +259,7 @@ unsafe extern "C" fn create<P: Plugin>(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     // SAFETY (objc2 contract): plain HTML string load, no base URL.
-    unsafe { webview.loadHTMLString_baseURL(&NSString::from_str(HTML), None) };
+    unsafe { webview.loadHTMLString_baseURL(&NSString::from_str(page.html), None) };
 
     // Refresh timer via clap.timer-support: the host calls on_timer() on the
     // main thread; 33 ms ~ the 30 Hz the header promises hosts allow
@@ -388,7 +274,7 @@ unsafe extern "C" fn create<P: Plugin>(
         host,
         host_timer,
         timer_id,
-        last_curve: Cell::new(None),
+        last_script: RefCell::new(None),
     });
     true
 }
@@ -452,18 +338,21 @@ unsafe extern "C" fn set_scale(_plugin: *const ClapPlugin, _scale: f64) -> bool 
 }
 
 /// `ext/gui.h:154-159` `[main-thread]`.
-unsafe extern "C" fn get_size(
+unsafe extern "C" fn get_size<P: Plugin>(
     _plugin: *const ClapPlugin,
     width: *mut u32,
     height: *mut u32,
 ) -> bool {
+    let Some(page) = page::<P>() else {
+        return false;
+    };
     if width.is_null() || height.is_null() {
         return false;
     }
     // SAFETY: host out-params valid for one write each.
     unsafe {
-        width.write(WIDTH as u32);
-        height.write(HEIGHT as u32);
+        width.write(page.width);
+        height.write(page.height);
     }
     true
 }
@@ -492,8 +381,12 @@ unsafe extern "C" fn adjust_size(
 
 /// `ext/gui.h:177-181` `[main-thread & !floating]`. Only our fixed size
 /// "fits".
-unsafe extern "C" fn set_size(_plugin: *const ClapPlugin, width: u32, height: u32) -> bool {
-    width == WIDTH as u32 && height == HEIGHT as u32
+unsafe extern "C" fn set_size<P: Plugin>(
+    _plugin: *const ClapPlugin,
+    width: u32,
+    height: u32,
+) -> bool {
+    page::<P>().is_some_and(|page| width == page.width && height == page.height)
 }
 
 /// `ext/gui.h:183-187` `[main-thread & !floating]`. The window handle for
@@ -559,7 +452,7 @@ unsafe extern "C" fn show<P: Plugin>(plugin: *const ClapPlugin) -> bool {
     // SAFETY: live instance per `instance::shared`'s contract.
     let inst = unsafe { instance::shared::<P>(plugin) };
     push_params::<P>(handle, inst);
-    push_curve_if_changed::<P>(handle, inst);
+    push_script::<P>(handle, inst);
     true
 }
 
@@ -598,7 +491,7 @@ unsafe extern "C" fn on_timer<P: Plugin>(plugin: *const ClapPlugin, timer_id: Cl
     // SAFETY: live instance per `instance::shared`'s contract.
     let inst = unsafe { instance::shared::<P>(plugin) };
     push_params::<P>(handle, inst);
-    push_curve_if_changed::<P>(handle, inst);
+    push_script::<P>(handle, inst);
 }
 
 /// Reads the SAME atomics the host's get_value reads (`param_bits` — one
@@ -653,63 +546,34 @@ fn escape_js(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Finds the parameter that selects the shipped duck curves: the stepped
-/// param whose every label names one. Label-keyed on purpose — reordering
-/// params keeps working; renaming a label degrades to "no drawing" instead
-/// of drawing the wrong shape.
-fn curve_param_index<P: Plugin>() -> Option<usize> {
-    use seco_core::ParamRange;
-    P::PARAMS.iter().position(|desc| match desc.range {
-        ParamRange::Stepped { labels, .. } => {
-            !labels.is_empty() && labels.iter().all(|l| duck_by_label(l).is_some())
-        }
-        _ => false,
-    })
-}
-
-fn duck_by_label(label: &str) -> Option<seco_dsp::CurveTable> {
-    match label {
-        "Pump" => Some(seco_dsp::duck::pump()),
-        "Punch" => Some(seco_dsp::duck::punch()),
-        "Soft" => Some(seco_dsp::duck::soft()),
-        _ => None,
+/// Evaluates whatever the plugin wants drawn beyond the parameter values
+/// ([`Plugin::editor_script`]), skipping the call into the page when the
+/// snippet is unchanged since the last push.
+fn push_script<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
+    let mut values = [0.0_f64; crate::MAX_PARAMS];
+    for (slot, bits) in values.iter_mut().zip(&inst.param_bits).take(P::PARAMS.len()) {
+        *slot = f64::from_bits(bits.load(Relaxed));
     }
-}
-
-/// Sends the active curve's real table to the canvas — the same pure
-/// seco-dsp functions the plugin builds its audio tables from, so the
-/// drawing is bit-identical to what sounds. Sent only on change.
-fn push_curve_if_changed<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
-    use seco_core::ParamRange;
-    let Some(param_index) = curve_param_index::<P>() else {
+    let Some(script) = P::editor_script(&values[..P::PARAMS.len()]) else {
         return;
     };
-    let value = f64::from_bits(inst.param_bits[param_index].load(Relaxed));
-    let ParamRange::Stepped { labels, .. } = &P::PARAMS[param_index].range else {
-        return;
-    };
-    let step = (value.round().max(0.0) as usize).min(labels.len() - 1);
-    if handle.last_curve.get() == Some(step) {
+    let mut last = handle.last_script.borrow_mut();
+    if last.as_deref() == Some(script.as_str()) {
         return;
     }
-    let Some(table) = duck_by_label(labels[step]) else {
-        return;
-    };
-    let mut points = String::from("[");
-    for i in 0..=256 {
-        if i > 0 {
-            points.push(',');
-        }
-        let phase = (i as f32 / 256.0).min(0.999_999);
-        points.push_str(&format!("{:.3}", table.lookup(phase)));
-    }
-    points.push(']');
-    let call = format!("window.__seco_curve && window.__seco_curve({points});");
     // SAFETY (objc2 contract): main thread; completion handler omitted.
     unsafe {
         handle
             .webview
-            .evaluateJavaScript_completionHandler(&NSString::from_str(&call), None);
+            .evaluateJavaScript_completionHandler(&NSString::from_str(&script), None);
     }
-    handle.last_curve.set(Some(step));
+    // Only remember what the page could actually have received: create() ->
+    // show() beats WebKit's load, evaluating into a half-loaded page is a
+    // silent no-op, and a remembered snippet is never re-sent. Unchanged
+    // output on the next tick then repeats the push instead of losing it.
+    // SAFETY (objc2 contract): reading a WKWebView property on the main
+    // thread.
+    if !unsafe { handle.webview.isLoading() } {
+        *last = Some(script);
+    }
 }

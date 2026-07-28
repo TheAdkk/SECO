@@ -6,9 +6,11 @@
 //! ppq when stopped, uninterpolated loop jumps) are documented with evidence
 //! in docs/clap-notes.md §1.5 and §11.
 
+mod editor;
+
 use seco_clap::seco_export;
-use seco_core::{AudioBuffer, ParamDesc, ParamRange, Plugin, RtContext};
-use seco_dsp::{CurveTable, OnePole, duck};
+use seco_core::{AudioBuffer, EditorPage, ParamDesc, ParamRange, Plugin, RtContext};
+use seco_dsp::{DuckShape, Slew, duck};
 
 const PARAM_RATE: usize = 0;
 const PARAM_MIX: usize = 1;
@@ -20,46 +22,52 @@ const PARAM_BYPASS: usize = 3;
 /// note = 4 beats.
 const RATE_BEATS: [f64; 5] = [4.0, 2.0, 1.0, 0.5, 0.25];
 
-/// Gain smoother time constant. This is also the transport-jump declick:
-/// loop wraps arrive as an uninterpolated backward ppq jump (§11.6), the
-/// phase resyncs hard, and the smoother glides the gain step over ~2 ms
-/// instead of clicking. It equally declicks parameter flips (mix, curve,
-/// bypass).
-const SMOOTH_TAU_SECONDS: f32 = 0.002;
+/// Ceiling on how fast the gain may move, in gain units per second.
+///
+/// Set to the peak slope of the shapes' own dip-entry fade, so following a
+/// curve is transparent — the limiter never touches it — while everything
+/// that is *not* a curve is ramped instead of stepped: loop wraps and seeks
+/// (uninterpolated backward ppq jumps, §11.6), parameter flips (mix, curve,
+/// rate, bypass) and preset changes. A full-scale jump takes about 3.2 ms.
+const MAX_GAIN_RATE: f32 = (std::f64::consts::PI / 2.0 / ATTACK_SECONDS) as f32;
 
 /// Free-run tempo when the host provides none.
 const FALLBACK_BPM: f64 = 120.0;
+
+/// How long the gain takes to reach the floor going *into* a dip, in
+/// seconds — the same wall-clock duration at every tempo and rate.
+///
+/// This is the plugin's whole click story on the entry side. The first
+/// model faded over a fraction of the cycle, which meant 25 ms at 1/2 and
+/// 3 ms at 1/16: audibly a tick at the fast end, and a late duck at the
+/// slow one. 5 ms is below the ear's click threshold and still tight
+/// enough that the beat is not smeared.
+const ATTACK_SECONDS: f64 = 0.005;
 
 struct Zape {
     sample_rate: f64,
     /// Cycle phase in `[0, 1)`. Kept across transport stops: hosts freeze
     /// ppq when stopped (§11.2), and zape keeps ducking free-run.
     phase: f64,
-    smoother: OnePole,
+    slew: Slew,
     /// True until the first processed sample after new/activate/reset: the
-    /// smoother then snaps onto the curve's actual value at the starting
+    /// limiter then snaps onto the shape's actual value at the starting
     /// phase instead of gliding down from an arbitrary 1.0 (which was an
     /// audible first-cycle overshoot on slow-attack curves). Only initial
     /// state snaps — transport jumps keep their glide.
     needs_snap: bool,
-    curves: [CurveTable; 3],
+    curves: [DuckShape; duck::COUNT],
     /// Per-block gain, computed once and applied to every channel.
     /// Allocated in `activate` (where `max_frames` is known); `process`
     /// never allocates.
     gain: Vec<f32>,
 }
 
-/// The shipped curves live in seco-dsp (`duck`), where a unit test enforces
-/// the cyclic invariant `f(0) == f(1) == 1.0` — the seam-click bug class.
-fn curve_shapes() -> [CurveTable; 3] {
-    [duck::pump(), duck::punch(), duck::soft()]
-}
-
 impl Plugin for Zape {
     const ID: &'static str = "dev.seco.zape";
     const NAME: &'static str = "Zape";
     const VENDOR: &'static str = "SECO";
-    const VERSION: &'static str = "0.4.0";
+    const VERSION: &'static str = "0.5.0";
     const DESCRIPTION: &'static str = "Tempo-synced ducking";
 
     const PARAMS: &'static [ParamDesc] = &[
@@ -72,29 +80,45 @@ impl Plugin for Zape {
         },
         ParamDesc {
             name: "Mix",
-            range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 1.0 },
+            // Percent is the plain value, not a display trick: the host's
+            // automation lane reads the same 0..100 the editor shows.
+            range: ParamRange::Continuous {
+                min: 0.0,
+                max: 100.0,
+                default: 100.0,
+                unit: "%",
+                decimals: 0,
+            },
         },
         ParamDesc {
             name: "Curve",
-            range: ParamRange::Stepped { labels: &["Pump", "Punch", "Soft"], default: 0 },
+            // Names and tables both come from seco-dsp, in one order: the
+            // stored value is the index, so the list is append-only.
+            range: ParamRange::Stepped { labels: duck::NAMES, default: 0 },
         },
         ParamDesc { name: "Bypass", range: ParamRange::Toggle { default: false, bypass: true } },
     ];
+
+    const EDITOR: Option<EditorPage> = Some(editor::PAGE);
+
+    fn editor_script(params: &[f64]) -> Option<String> {
+        editor::script(params)
+    }
 
     fn new() -> Self {
         Zape {
             sample_rate: 48_000.0,
             phase: 0.0,
-            smoother: OnePole::new(1.0),
+            slew: Slew::new(1.0),
             needs_snap: true,
-            curves: curve_shapes(),
+            curves: duck::tables(),
             gain: Vec::new(),
         }
     }
 
     fn activate(&mut self, sample_rate: f64, max_frames: u32) {
         self.sample_rate = sample_rate;
-        self.smoother.set_tau(SMOOTH_TAU_SECONDS, sample_rate as f32);
+        self.slew.set_max_rate(MAX_GAIN_RATE, sample_rate as f32);
         self.gain.clear();
         self.gain.resize(max_frames as usize, 1.0);
         self.needs_snap = true;
@@ -105,7 +129,7 @@ impl Plugin for Zape {
         // Deliberately NOT arming the snap: reset() can happen mid-stream
         // (hosts that flush FX around transport changes), where snapping to
         // the new phase's curve value is a one-sample gain step — a click
-        // (measured 0.424). The smoother keeps its value and glides; the
+        // (measured 0.424). The limiter keeps its value and ramps; the
         // snap belongs only to fresh streams (new/activate), where there is
         // no prior output to click against.
     }
@@ -114,7 +138,9 @@ impl Plugin for Zape {
         let transport = rt.transport();
         let rate = (rt.param(PARAM_RATE).round().max(0.0) as usize).min(RATE_BEATS.len() - 1);
         let cycle_beats = RATE_BEATS[rate];
-        let mix = rt.param(PARAM_MIX).clamp(0.0, 1.0) as f32;
+        // Mix is a percentage in plain units (what the host and the editor
+        // show); the curve blend wants a 0..1 factor.
+        let mix = (rt.param(PARAM_MIX).clamp(0.0, 100.0) / 100.0) as f32;
         let curve =
             (rt.param(PARAM_CURVE).round().max(0.0) as usize).min(self.curves.len() - 1);
         let curve = &self.curves[curve];
@@ -127,7 +153,7 @@ impl Plugin for Zape {
             if let Some(ppq) = transport.song_pos_beats {
                 // Hard resync every block while rolling. Loop wraps and
                 // seeks land here as a phase jump — no interpolation across
-                // the discontinuity — and the smoother absorbs the gain
+                // the discontinuity — and the limiter ramps the gain
                 // step. rem_euclid also handles negative ppq (count-in).
                 self.phase = (ppq / cycle_beats).rem_euclid(1.0);
             }
@@ -135,6 +161,10 @@ impl Plugin for Zape {
         // Stopped, or no beats timeline: free-run from the current phase.
 
         let inc = tempo / 60.0 / cycle_beats / self.sample_rate; // cycles/sample
+        // The dip entry is a fixed wall-clock fade, so its width in phase
+        // depends on how long this cycle actually lasts.
+        let cycle_seconds = cycle_beats * 60.0 / tempo;
+        let attack = (ATTACK_SECONDS / cycle_seconds) as f32;
         let frames = audio.frames();
         let n = frames.min(self.gain.len());
         debug_assert!(n == frames, "host sent more frames than activate() promised");
@@ -146,9 +176,9 @@ impl Plugin for Zape {
             let first_target = if bypass {
                 1.0
             } else {
-                1.0 + (curve.lookup(self.phase as f32) - 1.0) * mix
+                1.0 + (curve.gain(self.phase as f32, attack) - 1.0) * mix
             };
-            self.smoother.snap_to(first_target);
+            self.slew.snap_to(first_target);
             self.needs_snap = false;
         }
 
@@ -158,9 +188,9 @@ impl Plugin for Zape {
                 // keep calling it); gliding to unity makes it click-free.
                 1.0
             } else {
-                1.0 + (curve.lookup(self.phase as f32) - 1.0) * mix
+                1.0 + (curve.gain(self.phase as f32, attack) - 1.0) * mix
             };
-            *slot = self.smoother.process(target);
+            *slot = self.slew.process(target);
             self.phase = (self.phase + inc).rem_euclid(1.0);
         }
         // If the host overran its activate() promise, the tail passes
@@ -192,9 +222,13 @@ mod tests {
 
     use super::*;
 
-    /// rate = 1/4 (cycle 1 beat), mix = 1, curve = Soft, bypass off. Soft's
+    /// rate = 1/4 (cycle 1 beat), mix = 100%, curve = Soft, bypass off. Soft's
     /// slow attack is what made the start-up overshoot audible.
-    const PARAMS_SOFT: [f64; 4] = [2.0, 1.0, 2.0, 0.0];
+    const PARAMS_SOFT: [f64; 4] = [2.0, 100.0, 2.0, 0.0];
+
+    /// The dip entry width the tests run at: 5 ms of a one-beat cycle at
+    /// 120 BPM, matching `transport_at`.
+    const TEST_ATTACK: f32 = (ATTACK_SECONDS / 0.5) as f32;
 
     fn transport_at(ppq: f64) -> Transport {
         Transport {
@@ -257,6 +291,51 @@ mod tests {
         (max_step, max_at)
     }
 
+    /// Every parameter flip a user can perform from the editor, measured as
+    /// a gain step across the block boundary where it lands. Parameters are
+    /// read once per block, so a flip is always a block-boundary event: the
+    /// limiter is the only thing standing between it and a click.
+    ///
+    /// Returns (name, worst step) per case.
+    fn param_flip_steps() -> Vec<(&'static str, f32)> {
+        // [rate, mix, curve, bypass]
+        let flips: [(&str, [f64; 4], [f64; 4]); 8] = [
+            ("mix 100 -> 0", [2.0, 100.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]),
+            ("mix 0 -> 100", [2.0, 0.0, 0.0, 0.0], [2.0, 100.0, 0.0, 0.0]),
+            ("curve pump -> punch", [2.0, 100.0, 0.0, 0.0], [2.0, 100.0, 1.0, 0.0]),
+            ("curve punch -> soft", [2.0, 100.0, 1.0, 0.0], [2.0, 100.0, 2.0, 0.0]),
+            ("rate 1/4 -> 1/16", [2.0, 100.0, 0.0, 0.0], [4.0, 100.0, 0.0, 0.0]),
+            ("rate 1/16 -> 1/1", [4.0, 100.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0]),
+            ("bypass off -> on", [2.0, 100.0, 1.0, 0.0], [2.0, 100.0, 1.0, 1.0]),
+            ("bypass on -> off", [2.0, 100.0, 1.0, 1.0], [2.0, 100.0, 1.0, 0.0]),
+        ];
+        const BLOCK: usize = 512;
+        let beats_per_block = BLOCK as f64 * 120.0 / 60.0 / 48_000.0;
+        flips
+            .iter()
+            .map(|(name, before, after)| {
+                let mut plugin = Zape::new();
+                plugin.activate(48_000.0, 512);
+                let mut prev = None;
+                // Land the flip mid-duck (phase ~0.1 at 1/4), where the two
+                // curves disagree most — a flip at unity gain hides the step.
+                max_gain_step(&mut plugin, before, 10.1, 3, &mut prev);
+                let after_ppq = 10.1 + 3.0 * beats_per_block;
+                let (step, _) = max_gain_step(&mut plugin, after, after_ppq, 3, &mut prev);
+                (*name, step)
+            })
+            .collect()
+    }
+
+    /// A parameter flip must glide like everything else. Same 0.02 bound as
+    /// steady playback: a one-sample click is orders above it.
+    #[test]
+    fn param_flips_never_step_the_gain() {
+        for (name, step) in param_flip_steps() {
+            assert!(step < 0.02, "{name} stepped the gain by {step}");
+        }
+    }
+
     /// Diagnostic, not a pass/fail gate: prints the worst per-sample gain
     /// step per scenario. Run with:
     /// `cargo test -p zape -- --ignored --nocapture click_scan`
@@ -270,7 +349,7 @@ mod tests {
             for (rname, r, cycle_beats) in rates {
                 let mut plugin = Zape::new();
                 plugin.activate(48_000.0, 512);
-                let params = [r, 1.0, c, 0.0];
+                let params = [r, 100.0, c, 0.0];
                 let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
                 let mut prev = None;
                 let (step, at) = max_gain_step(&mut plugin, &params, 0.0, blocks, &mut prev);
@@ -278,10 +357,14 @@ mod tests {
                 println!("{cname:5} {rname:4}: max |dG| = {step:.5} @ phase {phase:.4}");
             }
         }
+        println!("--- parameter flips from the editor ---");
+        for (name, step) in param_flip_steps() {
+            println!("{name:22}: max |dG| = {step:.5}");
+        }
         println!("--- transport jump while playing (glide expected) ---");
         let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
-        let params = [2.0, 1.0, 2.0, 0.0];
+        let params = [2.0, 100.0, 2.0, 0.0];
         let mut prev = None;
         max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
         let (step, _) = max_gain_step(&mut plugin, &params, 20.6, 2, &mut prev);
@@ -305,16 +388,17 @@ mod tests {
         println!("soft reset continuous: max |dG| = {step:.5}");
     }
 
-    /// Steady playback must never step the gain: the seams are closed and
-    /// the attacks are finite-slope. Bound = 3x the worst measured slope
-    /// (0.00686 at Punch 1/16); a one-sample click is orders above it.
+    /// Steady playback must never step the gain. Superseded in strength by
+    /// `the_fade_holds_at_any_tempo_and_rate` — which proves the bound at
+    /// the extremes rather than at one tempo — but kept: it is the cheap
+    /// check that fails first when a shape grows a discontinuity.
     #[test]
     fn steady_playback_never_steps_the_gain() {
         for curve in [0.0_f64, 1.0, 2.0] {
             for (rate, cycle_beats) in [(2.0_f64, 1.0_f64), (4.0, 0.25)] {
                 let mut plugin = Zape::new();
                 plugin.activate(48_000.0, 512);
-                let params = [rate, 1.0, curve, 0.0];
+                let params = [rate, 100.0, curve, 0.0];
                 let blocks = (8.0 * cycle_beats * 24_000.0 / 512.0).ceil() as usize + 1;
                 let mut prev = None;
                 let (step, at) = max_gain_step(&mut plugin, &params, 0.0, blocks, &mut prev);
@@ -326,6 +410,103 @@ mod tests {
         }
     }
 
+    /// Runs the plugin at an arbitrary tempo and sample rate and returns
+    /// the worst per-sample gain step. The shared helpers above are pinned
+    /// to 120 BPM / 48 kHz; the fade's whole point is that neither matters.
+    fn worst_step_at(curve: f64, cycle_beats: f64, rate: f64, tempo: f64, sample_rate: f64) -> f32 {
+        const BLOCK: usize = 256;
+        let mut plugin = Zape::new();
+        plugin.activate(sample_rate, BLOCK as u32);
+        let beats_per_sample = tempo / 60.0 / sample_rate;
+        let params = [rate, 100.0, curve, 0.0];
+        let blocks = (4.0 * cycle_beats / (BLOCK as f64 * beats_per_sample)).ceil() as usize + 1;
+        let (mut ppq, mut worst) = (0.0, 0.0_f32);
+        let mut previous: Option<f32> = None;
+        for _ in 0..blocks {
+            let mut left = vec![1.0_f32; BLOCK];
+            let mut right = vec![1.0_f32; BLOCK];
+            let transport = Transport {
+                tempo_bpm: Some(tempo),
+                song_pos_beats: Some(ppq),
+                song_pos_seconds: None,
+                time_signature: None,
+                playing: true,
+            };
+            with_rt_context(transport, &params, |rt| {
+                let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+                let mut audio = AudioBuffer::new(&mut channels);
+                plugin.process(&mut audio, rt);
+            });
+            for gain in &left {
+                if let Some(p) = previous {
+                    worst = worst.max((gain - p).abs());
+                }
+                previous = Some(*gain);
+            }
+            ppq += BLOCK as f64 * beats_per_sample;
+        }
+        worst
+    }
+
+    /// The failure this model exists to prevent: the dip entry used to be a
+    /// fraction of the cycle, so it got shorter as rate and tempo went up
+    /// until it clicked (3 ms at 1/16, heard as a tick). The fade is now
+    /// wall-clock, so the worst case — fastest rate, fast tempo, lowest
+    /// sample rate — obeys the same bound as the slowest.
+    ///
+    /// Bound: the peak slope of a raised cosine over `ATTACK_SECONDS`,
+    /// which is what the fade is.
+    #[test]
+    fn the_fade_holds_at_any_tempo_and_rate() {
+        let cases = [
+            // (rate index, cycle beats, tempo, sample rate)
+            (4.0, 0.25, 200.0, 44_100.0),
+            (4.0, 0.25, 174.0, 48_000.0),
+            (0.0, 4.0, 60.0, 96_000.0),
+            (2.0, 1.0, 95.0, 48_000.0), // the session that reported the tick
+        ];
+        for (rate, cycle_beats, tempo, sample_rate) in cases {
+            // The limiter computes its own step from the same constants in
+            // f32, so allow a hair for rounding rather than chase ULPs.
+            let bound =
+                (std::f64::consts::PI / 2.0 / (ATTACK_SECONDS * sample_rate)) as f32 * 1.001;
+            for curve in 0..duck::COUNT {
+                let worst =
+                    worst_step_at(curve as f64, cycle_beats, rate, tempo, sample_rate);
+                assert!(
+                    worst <= bound,
+                    "{} at rate {rate}, {tempo} BPM, {sample_rate} Hz: stepped {worst} \
+                     (bound {bound})",
+                    duck::NAMES[curve],
+                );
+            }
+        }
+    }
+
+    /// The complaint that started this: the duck has to be *on* the beat.
+    /// The old shapes sat at unity at phase 0 and fell afterwards, so the
+    /// transient passed at full level and was then cut — ~5 ms above 0.9
+    /// gain at 95 BPM, rate 1/2. Nothing near the beat may be loud.
+    #[test]
+    fn the_floor_lands_on_the_beat_not_after_it() {
+        let mut plugin = Zape::new();
+        plugin.activate(48_000.0, 512);
+        // Rate 1/4 (one beat per cycle), Pump, full mix: ppq 8.0 is a beat.
+        let params = [2.0, 100.0, 0.0, 0.0];
+        // A block that ends exactly on the beat, so the entry fade runs
+        // inside it, then a block that starts on the beat.
+        const BLOCK: usize = 512;
+        let beats_per_sample = 120.0 / 60.0 / 48_000.0;
+        let approach =
+            run_block_with(&mut plugin, &params, 8.0 - BLOCK as f64 * beats_per_sample, BLOCK);
+        let on_beat = run_block_with(&mut plugin, &params, 8.0, 64);
+
+        assert!(on_beat[0] < 0.1, "gain {} at the beat — the duck is late", on_beat[0]);
+        // And the fade must have done the work before the beat, not after.
+        let last = *approach.last().unwrap();
+        assert!(last < 0.15, "gain {last} one sample before the beat — the entry never ran");
+    }
+
     /// Hosts with flush-on-transport-change call reset() around jumps. That
     /// must glide like any other jump — snapping there is a one-sample
     /// click (measured 0.424 before the fix).
@@ -333,7 +514,7 @@ mod tests {
     fn reset_plus_jump_glides_instead_of_clicking() {
         let mut plugin = Zape::new();
         plugin.activate(48_000.0, 512);
-        let params = [2.0, 1.0, 2.0, 0.0];
+        let params = [2.0, 100.0, 2.0, 0.0];
         let mut prev = None;
         max_gain_step(&mut plugin, &params, 10.25, 4, &mut prev);
         plugin.reset();
@@ -353,7 +534,7 @@ mod tests {
         // ppq 10.25, cycle 1 beat → phase 0.25, well inside Soft's dip.
         let out = run_block(&mut plugin, 10.25, 64);
 
-        let expected = duck::soft().lookup(0.25);
+        let expected = duck::soft().gain(0.25, TEST_ATTACK);
         assert!(expected < 0.2, "test premise: Soft at phase 0.25 must duck deep");
         assert!(
             (out[0] - expected).abs() < 1e-4,
@@ -363,7 +544,7 @@ mod tests {
     }
 
     /// The snap is initial-state only. A transport jump (loop wrap, seek)
-    /// must keep the smoother's glide — snapping there would reintroduce
+    /// must keep the limiter's ramp — snapping there would reintroduce
     /// the seam click as a resync click.
     #[test]
     fn transport_jump_glides_snap_only_on_start() {
@@ -375,7 +556,7 @@ mod tests {
         // Jump far away on the curve (phase 0.25 → 0.6, gain ~0.1 → ~0.6).
         let second = run_block(&mut plugin, 20.6, 64);
 
-        let jump_target = duck::soft().lookup(0.6);
+        let jump_target = duck::soft().gain(0.6, TEST_ATTACK);
         assert!(jump_target > 0.5, "test premise: jump lands on a high-gain phase");
         let boundary_step = (second[0] - first[63]).abs();
         assert!(

@@ -8,12 +8,14 @@
 #![warn(missing_docs)]
 
 mod buffer;
+mod editor;
 mod param;
 mod plugin;
 mod rt;
 mod transport;
 
 pub use buffer::AudioBuffer;
+pub use editor::EditorPage;
 pub use param::{ParamDesc, ParamRange};
 pub use plugin::Plugin;
 pub use rt::RtContext;

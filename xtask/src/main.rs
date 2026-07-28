@@ -19,7 +19,7 @@ mod dist;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-use bundle::Format;
+use bundle::{Format, Platform};
 
 const USAGE: &str = "\
 usage: cargo xtask bundle <package> [options]
@@ -31,8 +31,8 @@ bundle options:
   --vst3               emit a .vst3 bundle (implies the vst3 feature)
   --install            copy the result into the user plug-in folder
 
-dist builds the release CLAP and VST3 with the editor, and zips them with
-an installer for someone else's machine. macOS only so far.
+dist builds the release CLAP and VST3 with the editor and packages them
+with an installer, for the platform it is run on.
 ";
 
 fn main() -> ExitCode {
@@ -125,13 +125,16 @@ fn build_artifact(args: &Args) -> Result<(PathBuf, descriptor::Descriptor), Stri
     cargo_build(args)?;
 
     let profile = if args.release { "release" } else { "debug" };
-    let library = target_dir()?.join(profile).join(library_file_name(&args.package));
+    let platform = Platform::host();
+    let library =
+        target_dir()?.join(profile).join(platform.library_file_name(&args.package));
     if !library.exists() {
         return Err(format!("built library not found: {}", library.display()));
     }
 
     let descriptor = descriptor::read(&library)?;
-    let artifact = bundle::assemble(&library, &args.package, &descriptor, args.format)?;
+    let artifact =
+        bundle::assemble(&library, &args.package, &descriptor, args.format, platform)?;
     Ok((artifact, descriptor))
 }
 
@@ -140,7 +143,7 @@ fn bundle_command(args: &Args) -> Result<(), String> {
     println!("built {}", artifact.display());
 
     if args.install {
-        let installed = bundle::install(&artifact, args.format)?;
+        let installed = bundle::install(&artifact, args.format, Platform::host())?;
         println!("installed {}", installed.display());
     } else {
         println!("install with: cargo xtask bundle {} ... --install", args.package);
@@ -155,9 +158,6 @@ fn bundle_command(args: &Args) -> Result<(), String> {
 /// pure-Rust one the README claims it is. The same dylib would have worked
 /// for both faces and would have made that sentence false.
 fn dist_command(package: &str) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("dist only builds macOS packages so far".into());
-    }
     let editor_only = Args {
         package: package.to_owned(),
         release: true,
@@ -177,8 +177,14 @@ fn dist_command(package: &str) -> Result<(), String> {
     let dist_dir = target_dir()?.join("dist");
     std::fs::create_dir_all(&dist_dir)
         .map_err(|e| format!("could not create {}: {e}", dist_dir.display()))?;
-    let archive =
-        dist::package(package, &clap_bundle, &vst3_bundle, &descriptor, &dist_dir)?;
+    let archive = dist::package(
+        package,
+        &clap_bundle,
+        &vst3_bundle,
+        &descriptor,
+        &dist_dir,
+        Platform::host(),
+    )?;
     println!("packaged {}", archive.display());
     Ok(())
 }
@@ -212,15 +218,3 @@ fn target_dir() -> Result<PathBuf, String> {
     Ok(workspace.join("target"))
 }
 
-/// What cargo names the cdylib for `package`. The crate name is the package
-/// name with dashes turned into underscores.
-fn library_file_name(package: &str) -> String {
-    let crate_name = package.replace('-', "_");
-    if cfg!(target_os = "windows") {
-        format!("{crate_name}.dll")
-    } else if cfg!(target_os = "macos") {
-        format!("lib{crate_name}.dylib")
-    } else {
-        format!("lib{crate_name}.so")
-    }
-}

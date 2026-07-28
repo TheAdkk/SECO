@@ -62,12 +62,35 @@ Validate headless with [pluginval](https://github.com/Tracktion/pluginval):
 ## Packaging it for someone else
 
 ```sh
-cargo xtask dist zape        # -> target/dist/Zape-0.5.0-macOS.zip
+cargo xtask dist zape
 ```
 
-Builds both faces at release with the editor on, and zips them with a
-double-clickable `Install.command` and a Read Me. The name and version come
-from the plugin's own descriptor, like everything else the bundle says.
+| host | archive | installer |
+|---|---|---|
+| macOS | `Zape-0.5.0-macOS.zip` | `Install.command` |
+| Linux | `Zape-0.5.0-linux.tar.gz` | `install.sh` |
+| Windows | `Zape-0.5.0-windows.zip` | `Install.bat` |
+
+Builds both faces at release with the editor on and packages them with an
+installer and a Read Me, for the platform it runs on — nothing here
+cross-compiles. The name and version come from the plugin's own descriptor,
+like everything else the bundle says.
+
+### One layout per platform, and one of them was wrong
+
+CLAP is a bundle directory on macOS and a plain shared object named `.clap`
+everywhere else. VST3 is a bundle on **all three** — including Linux and
+Windows, where the binary lives at `Contents/<arch>-linux/name.so` and
+`Contents/<arch>-win/name.vst3`. The non-macOS path here used to write a
+renamed `.so` for both, which is not a VST3 anywhere.
+
+The target is a `Platform` value rather than a `cfg!`, so all three trees
+can be assembled and checked from one machine — which is the only reason
+any of the Linux or Windows work is tested at all. What that does not do is
+run them: **the Linux and Windows installers have never executed on the
+machines they are for.** The layouts, the folders they install into, the
+line endings and the Read Me text are covered by tests; the scripts
+themselves are unproven until someone runs them.
 
 Two cargo builds rather than one, on purpose: the `vst3` feature links
 clap-wrapper's C++ into the binary, and the CLAP that ships should be the

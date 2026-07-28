@@ -38,7 +38,7 @@ history is worth more here than the separation would be.
 | `seco-clap` | The CLAP adapter: hand-written `#[repr(C)]` mirrors of the CLAP 1.2.10 headers (pinned at commit `195b42a`), entry point, factory, params/state/audio-ports/gui extensions. | The only crate with `unsafe` in the shipped binary; every block carries a `SAFETY:` comment citing the header line it relies on |
 | `seco-dsp` | Allocation-free DSP utilities: slew limiter, one-pole smoother, curve lookup tables, the ducking shapes. Pure functions, unit-tested without a host. | `#![forbid(unsafe_code)]` |
 | `plugins/zape` | The plugin: multiplies audio by a gain curve indexed by the host's beat position, plus its editor page. No sidechain input, no signal analysis. | none |
-| `xtask` | Build tasks (`cargo xtask bundle zape --release --install`): builds the crate and assembles the platform artifact. Not shipped, not linked into any plugin. | `dlopen`/`dlsym` only, to read the built plugin's own descriptor |
+| `xtask` | Build tasks (`cargo xtask bundle`, `cargo xtask dist`): builds a plugin, assembles the platform artifact, and packages it with an installer. Not shipped, not linked into any plugin. | `dlopen`/`dlsym` only, to read the built plugin's own descriptor |
 
 Build, install and package: [docs/building.md](docs/building.md). CLAP header findings
 with citations and the empirical transport results: [docs/clap-notes.md](docs/clap-notes.md).

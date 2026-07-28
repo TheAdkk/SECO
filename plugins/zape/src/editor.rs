@@ -291,12 +291,12 @@ const HTML: &str = r##"<!DOCTYPE html>
   .main { display: flex; gap: 16px; flex: 1; min-height: 0; }
   .knobwrap {
     width: 150px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 7px;
+    align-items: center; justify-content: center; gap: 5px;
   }
   /* The SVG is authored at 132; the box is what the vertical budget can
      actually spare once the header became a plaque. */
   #knob { cursor: ns-resize; touch-action: none; filter: var(--knob-shadow);
-          width: 112px; height: 112px; }
+          width: 104px; height: 104px; }
   #knob .track { stroke: var(--knob-track); }
   #knob .arc { stroke: var(--accent); }
   #knob .body { fill: var(--knob-body); stroke: var(--ink); stroke-width: var(--outline); }
@@ -304,14 +304,23 @@ const HTML: &str = r##"<!DOCTYPE html>
   .knoblabel { font-weight: 800; letter-spacing: 0.1em; font-size: 12px; }
   /* flex: none, or the column squashes the canvas and the drawing
      inside it stretches with the box. */
-  .mascot { display: none; flex: none; width: 52px; height: 88px; }
   /* The 3D decoration replaces the flat one when it is both wanted and
      available; if the context never comes up, the drawing stays. */
-  .mascot3d { display: none; flex: none; width: 52px; height: 88px; }
-  /* The bottle is the same object in every skin, so it is shown by the
-     base rules rather than by one of them. `fx3d` is set once the context
-     is up; until then — or if it never comes up — the drawing stands in. */
-  .mascot { display: block; }
+  .mascot3d { display: none; flex: none; width: 71px; height: 120px; }
+  /* The bottle is the same object in every skin, so it is shown — and
+     coloured — by the base rules rather than by one of them. `fx3d` is set
+     once the context is up; until then, or if it never comes up, the
+     drawing stands in, which is why its fills cannot live in one skin. */
+  .mascot { display: block; flex: none; width: 71px; height: 120px; }
+  .mascot .cap { fill: #e8b53a; stroke: var(--ink); stroke-width: 3; }
+  .mascot .glass { fill: #7a4a12; stroke: var(--ink); stroke-width: 3; }
+  .mascot .shine { fill: #ffffff44; }
+  .mascot .label { fill: #f6efdc; stroke: var(--ink); stroke-width: 3; }
+  .mascot .labeltext {
+    fill: #0a1f4d; font: 900 italic 9px "Avenir Next", sans-serif;
+    letter-spacing: 0.04em;
+  }
+  .mascot .sparkles { fill: var(--accent); }
   body.fx3d .mascot3d { display: block; }
   body.fx3d .mascot { display: none; }
   .knoblabel b { color: var(--accent-text); }
@@ -506,17 +515,6 @@ const HTML: &str = r##"<!DOCTYPE html>
     background: linear-gradient(105deg, #ffffff1c 0 34%, transparent 36%),
                 radial-gradient(120% 60% at 50% -20%, #9fc4ff26, transparent 70%);
   }
-  body[data-skin="tianguis"] .mascot .cap { fill: #e8b53a; stroke: var(--ink); stroke-width: 3; }
-  body[data-skin="tianguis"] .mascot .glass { fill: #7a4a12; stroke: var(--ink); stroke-width: 3; }
-  body[data-skin="tianguis"] .mascot .shine { fill: #ffffff44; }
-  body[data-skin="tianguis"] .mascot .label {
-    fill: #f6efdc; stroke: var(--ink); stroke-width: 3;
-  }
-  body[data-skin="tianguis"] .mascot .labeltext {
-    fill: #0a1f4d; font: 900 italic 9px "Avenir Next", sans-serif;
-    letter-spacing: 0.04em;
-  }
-  body[data-skin="tianguis"] .mascot .sparkles { fill: #ffe9a8; }
   body[data-skin="tianguis"] .skinrow.on,
   body[data-skin="tianguis"] .browser,
   body[data-skin="tianguis"] .skins {
@@ -1253,7 +1251,7 @@ const HTML: &str = r##"<!DOCTYPE html>
 
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const model = modelMatrix(spin, PITCH + pulse * 0.1, LEAN, -3.1);
+    const model = modelMatrix(spin, PITCH + pulse * 0.1, LEAN, -2.75);
     const mvp = multiply(perspective(0.72, 152 / 256, 0.1, 12), model);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mvp'), false, mvp);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'model'), false, model);

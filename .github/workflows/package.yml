@@ -1,0 +1,41 @@
+name: package
+
+# Nothing here cross-compiles, so the only way to get a Windows or Linux
+# build from a Mac is to borrow a machine that is one. Run this from the
+# Actions tab and download the artifacts.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not deny you the other two.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The VST3 face is clap-wrapper's C++, and on Linux that needs the X11
+      # headers the runner does not ship. macOS and Windows runners already
+      # carry a C++ toolchain.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxcb1-dev
+
+      - run: cargo xtask dist zape
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zape-${{ matrix.os }}
+          path: |
+            target/dist/*.zip
+            target/dist/*.tar.gz
+          if-no-files-found: error

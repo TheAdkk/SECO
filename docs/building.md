@@ -76,6 +76,39 @@ installer and a Read Me, for the platform it runs on — nothing here
 cross-compiles. The name and version come from the plugin's own descriptor,
 like everything else the bundle says.
 
+### Getting a build for a platform you are not on
+
+Nothing here cross-compiles: the VST3 face is clap-wrapper's C++, and a
+Mac cannot produce a Windows one. Two ways round it.
+
+**Borrow a machine through CI.** The `package` workflow builds on all three
+runners; start it from the Actions tab ("Run workflow") and download the
+artifacts, or push a `v*` tag. That is the whole story for someone who does
+not want to set up a toolchain.
+
+**Or build it there.** On Windows that means Rust plus the Visual Studio
+Build Tools with "Desktop development with C++" — the MSVC linker for
+Rust, and a C++ compiler for clap-wrapper. Then the same command as
+anywhere:
+
+```
+cargo xtask dist zape
+```
+
+### The editor is macOS only
+
+Worth knowing before setting any of that up: the whole editor — skins,
+curve drawing, the library, the meter behind the curve — is a WKWebView,
+and WKWebView is macOS. On Linux and Windows the plugin loads, processes
+and automates correctly, and the host draws its own generic parameter
+panel.
+
+The plugin still *compiles* for all three with the `gui` feature on (the
+editor is `cfg`-ed out rather than excluded by hand), and a session saved
+on a Mac with a drawn curve plays that curve on Windows — the state block
+is bytes, and nothing in it is platform-specific. You just cannot draw a
+new one there.
+
 ### One layout per platform, and one of them was wrong
 
 CLAP is a bundle directory on macOS and a plain shared object named `.clap`

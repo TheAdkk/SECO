@@ -417,6 +417,9 @@ claims compatibility and uses no Steinberg branding.
 - Stereo only (`MAX_CHANNELS = 2`); one plugin per binary (the descriptor
   storage is a single static, enforced by the duplicate `clap_entry` link
   error).
+- The editor is macOS only — it is a WKWebView. The plugin builds, loads and
+  processes on Linux and Windows, with the host's generic parameter panel
+  instead of a face.
 - Buffer safety assumes hosts don't hand *partially* overlapping in/out
   buffers (exact in-place aliasing is handled; partial overlap is a host
   contract violation, documented at the `SAFETY:` site).

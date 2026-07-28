@@ -36,9 +36,9 @@ and version are written.
 ## Zape
 
 Tempo-synced ducking ("ghost kick"): `gain = curve(phase)` where `phase` is
-the host's beat position folded into a cycle. The editor draws the incoming
-audio behind the curve, bucketed by phase, so the picture is triggered on
-the beat rather than scrolling past. Four parameters: **Rate**
+the host's beat position folded into a cycle. The editor draws the audio behind
+the curve — dry as a ghost, ducked on top — bucketed by phase, so the
+picture is triggered on the beat rather than scrolling past. Four parameters: **Rate**
 (1/1 … 1/16), **Mix**, **Curve** (15 shapes: single dips of varying
 recovery, gated holds, and 2/3/4-per-cycle patterns), **Bypass**. Fifteen shapes ship and the sixteenth is drawn in the editor.
 Every shape puts its floor exactly on the beat and closes the cycle seam at the
@@ -174,7 +174,11 @@ depends on would be a bug rather than a trade.
 
 Zape buckets peaks by *phase*, so the display is beat-aligned rather than
 scrolling — a scope triggered on the beat, drawn on the same axis as the
-curve above it. Two details that were wrong first: the release has to fire
+curve above it. It publishes two of them, the signal in and the signal out:
+the first version drew only the input, which made the one thing the plugin
+does invisible. The duck is the gap between the two bands, and
+`the_scope_pictures_both_signals_against_the_beat` asserts that gap rather
+than just that something was drawn. Two details that were wrong first: the release has to fire
 once per pass rather than once per sample (per sample, a bucket ends up
 holding the last few samples instead of the loudest of the pass — a thin
 wobble where the envelope should be), and reconstructing the block's start

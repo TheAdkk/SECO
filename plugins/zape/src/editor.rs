@@ -400,24 +400,32 @@ const HTML: &str = r##"<!DOCTYPE html>
     }
   }
 
-  // The input level, mirrored around the middle so it reads as a waveform
-  // rather than a bar chart. Beat-aligned: bucket i is phase i / count, the
-  // same axis as the curve above it.
+  // Two waveforms, mirrored around the middle so they read as audio rather
+  // than as a bar chart: what arrived, and what is leaving. The duck is the
+  // gap between them — drawing only the input made the one thing the plugin
+  // does invisible. Beat-aligned: bucket i is phase i / count, the same axis
+  // as the curve above.
   function waveform(ctx) {
+    const half = scope.length / 2;
+    // Dry first, as a dim ghost, so the ducked signal sits inside it.
+    band(ctx, scope.slice(0, half), 'rgba(190, 190, 190, 0.13)');
+    band(ctx, scope.slice(half), 'rgba(225, 225, 225, 0.42)');
+  }
+
+  function band(ctx, values, fill) {
     const middle = ctx.canvas.height / 2;
     const scale = ctx.canvas.height * 0.46;
     ctx.beginPath();
-    ctx.moveTo(0, middle);
-    for (let i = 0; i < scope.length; i++) {
-      const x = (i / (scope.length - 1)) * ctx.canvas.width;
-      ctx.lineTo(x, middle - scope[i] * scale);
+    for (let i = 0; i < values.length; i++) {
+      const x = (i / (values.length - 1)) * ctx.canvas.width;
+      ctx.lineTo(x, middle - values[i] * scale);
     }
-    for (let i = scope.length - 1; i >= 0; i--) {
-      const x = (i / (scope.length - 1)) * ctx.canvas.width;
-      ctx.lineTo(x, middle + scope[i] * scale);
+    for (let i = values.length - 1; i >= 0; i--) {
+      const x = (i / (values.length - 1)) * ctx.canvas.width;
+      ctx.lineTo(x, middle + values[i] * scale);
     }
     ctx.closePath();
-    ctx.fillStyle = 'rgba(200, 200, 200, 0.16)';
+    ctx.fillStyle = fill;
     ctx.fill();
   }
 
@@ -628,10 +636,17 @@ mod tests {
         );
         // A plausible envelope, so the preview shows the audio picture the
         // way a host would drive it.
+        let half = seco_clap::SCOPE_BUCKETS / 2;
         let mut scope = [0.0_f32; seco_clap::SCOPE_BUCKETS];
-        for (index, bucket) in scope.iter_mut().enumerate() {
-            let phase = index as f32 / seco_clap::SCOPE_BUCKETS as f32;
-            *bucket = (0.35 + 0.5 * (phase * 24.0).sin().abs()) * (1.0 - phase * 0.35);
+        // The preview selects the drawn curve, so duck the mock signal with
+        // that one — otherwise the picture and the line disagree.
+        let shape = CustomCurve::default().shape();
+        for index in 0..half {
+            let phase = index as f32 / half as f32;
+            let level = (0.35 + 0.5 * (phase * 24.0).sin().abs()) * (1.0 - phase * 0.35);
+            scope[index] = level;
+            // What leaves: the same signal through the curve.
+            scope[half + index] = level * shape.gain(phase, 0.01);
         }
         let harness = format!(
             "{harness}<script>{}</script>",

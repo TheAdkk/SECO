@@ -31,10 +31,15 @@ pub const MAX_PARAMS: usize = 32;
 /// How many visualization buckets a plugin can publish
 /// ([`RtContext::set_scope`](seco_core::RtContext::set_scope)).
 ///
+/// What the buckets *mean* is the plugin's business: the framework only
+/// promises the array's size and that writing to it is free. Zape uses two
+/// halves — the signal in, and the signal out — which is why this is 256
+/// rather than the 128 one waveform needs.
+///
 /// 128 across an editor a few hundred pixels wide is a couple of pixels per
-/// bucket — past what the eye resolves in a waveform, and small enough that
-/// pushing the lot into the page every refresh stays cheap.
-pub const SCOPE_BUCKETS: usize = 128;
+/// bucket, past what the eye resolves in a waveform, and the whole array
+/// still fits in about a kilobyte of JSON per refresh.
+pub const SCOPE_BUCKETS: usize = 256;
 
 /// Not public API — re-exports for `seco_export!` expansions only.
 #[doc(hidden)]

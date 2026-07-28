@@ -61,37 +61,38 @@ pub(crate) fn directory() -> Option<PathBuf> {
     Some(data_directory()?.join("curves"))
 }
 
-/// Name of the file holding the chosen skin, next to the curves folder.
-const SKIN_FILE: &str = "skin";
-
-/// The skin the user last chose, if any. A preference, not state: it lives
-/// beside the library rather than in the session, so it follows the person
-/// rather than the project.
-pub(crate) fn read_skin() -> Option<String> {
-    let path = data_directory()?.join(SKIN_FILE);
+/// Reads a small preference file from the data directory.
+///
+/// Preferences are one file, one value: a skin name, a flag. They live
+/// beside the library rather than in the session because they follow the
+/// person, not the project — the same set on another machine should not
+/// drag someone else's taste in with it.
+///
+/// `key` comes from the caller's own fixed list, never from the page.
+pub(crate) fn read_setting(key: &str) -> Option<String> {
+    let path = data_directory()?.join(key);
     let metadata = std::fs::metadata(&path).ok()?;
     if !metadata.is_file() || metadata.len() > 64 {
         return None;
     }
-    let text = std::fs::read_to_string(&path).ok()?;
-    let name = text.trim().to_owned();
-    (!name.is_empty()).then_some(name)
+    let value = std::fs::read_to_string(&path).ok()?.trim().to_owned();
+    (!value.is_empty()).then_some(value)
 }
 
-/// Remembers the chosen skin. The caller has already checked the name
-/// against the skins it ships, so this only has to write it.
-pub(crate) fn write_skin(name: &str) -> bool {
+/// Remembers a preference. The caller has already checked both the key and
+/// the value against what it ships.
+pub(crate) fn write_setting(key: &str, value: &str) -> bool {
     let Some(dir) = data_directory() else {
         return false;
     };
     if std::fs::create_dir_all(&dir).is_err() {
         return false;
     }
-    let temp = dir.join(format!("{SKIN_FILE}.tmp"));
-    if std::fs::write(&temp, name.as_bytes()).is_err() {
+    let temp = dir.join(format!("{key}.tmp"));
+    if std::fs::write(&temp, value.as_bytes()).is_err() {
         return false;
     }
-    std::fs::rename(&temp, dir.join(SKIN_FILE)).is_ok()
+    std::fs::rename(&temp, dir.join(key)).is_ok()
 }
 
 /// A saved curve.
@@ -318,13 +319,19 @@ mod tests {
     }
 
     #[test]
-    fn the_chosen_skin_is_remembered() {
-        let _library = TempLibrary::new("skin");
-        assert_eq!(read_skin(), None, "no file yet means no preference");
-        assert!(write_skin("tianguis"));
-        assert_eq!(read_skin().as_deref(), Some("tianguis"));
-        assert!(write_skin("rockola"));
-        assert_eq!(read_skin().as_deref(), Some("rockola"));
+    fn preferences_are_remembered_one_file_each() {
+        let _library = TempLibrary::new("settings");
+        assert_eq!(read_setting("skin"), None, "no file yet means no preference");
+        assert!(write_setting("skin", "tianguis"));
+        assert_eq!(read_setting("skin").as_deref(), Some("tianguis"));
+        assert!(write_setting("skin", "rockola"));
+        assert_eq!(read_setting("skin").as_deref(), Some("rockola"));
+        // A second preference does not disturb the first.
+        assert!(write_setting("fx3d", "0"));
+        assert_eq!(read_setting("fx3d").as_deref(), Some("0"));
+        assert_eq!(read_setting("skin").as_deref(), Some("rockola"));
+        // And the curve library is oblivious to both.
+        assert!(list().is_empty());
     }
 
     #[test]

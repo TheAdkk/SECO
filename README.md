@@ -215,12 +215,40 @@ farmhouse, candy pinks over hard black ink, and a diner in yellow and
 orange. No marks, no badges, no characters, no team crests; the names are
 ours.
 
-The default one goes further and rebuilds the grammar of a 2008 fan page:
+### 3D in the editor, and what it costs
+
+The default skin's mascot is a real mesh: a lathed bottle in raw WebGL,
+spinning, leaning into the beat. No library — the plugin is one HTML string
+with no way to fetch anything — so the renderer, the mesh and the texture
+are all generated in the page. A bottle is a surface of revolution, which is
+both how the shape is described (fourteen radial segments over a profile of
+fourteen points) and why describing it costs nothing.
+
+What it costs is worth being precise about, because "3D in a plugin" usually
+means "a plugin that drops out". It is GPU work on the *main* thread, capped
+at 30 Hz, and it stops existing when the editor closes. It cannot touch
+audio: the page's only line to the audio thread is the scope array, which is
+relaxed atomic stores in one direction. There is nothing to contend for, no
+lock to wait on and no allocation on the path. The audio callback does not
+know the renderer exists.
+
+It can still be turned off — a machine is a machine — and that choice is
+remembered like the skin. If the WebGL context fails to come up (an old
+machine, a remote session, a host with an unusual sandbox) the flat drawing
+stays rather than leaving a hole.
+
+On model files: `.obj` is a text format and its parser is short, `.glb` is
+the right long-term answer, and `.blend` is Blender's internal memory dump —
+versioned, undocumented in practice, and read by essentially nothing but
+Blender. Export from it, don't parse it.
+
+The default skin also rebuilds the grammar of a 2008 fan page:
 a bevelled plaque behind the header, a gloss highlight over the top half of
 every control, an inset screen with a diagonal reflection, chrome lettering,
-and a hand-drawn caguama in inline SVG. Decoration is markup a skin shows or
-hides, so it costs the other four nothing and the binary is still the whole
-plugin — no image files, no fetches.
+and a caguama — a real one, spun in WebGL, with the flat drawing kept as
+its fallback. Decoration is markup a skin shows or hides, so it costs the
+other four nothing and the binary is still the whole plugin: no image files,
+no fetches, no asset directory to lose.
 
 Two things that only work if you know why: the reflection over the display
 is `pointer-events: none`, or it would eat the drag that draws the curve;

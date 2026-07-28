@@ -59,8 +59,9 @@ pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
     // already the one the adapter only pushes when something changed.
     Some(format!(
         "{shapes}window.__seco_custom && window.__seco_custom([{custom}], {attack:.5});\
-         window.__seco_skin && window.__seco_skin(\"{}\");",
-        current_skin()
+         window.__seco_skin && window.__seco_skin(\"{}\", {});",
+        current_skin(),
+        fx3d()
     ))
 }
 
@@ -103,10 +104,29 @@ static SKIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 fn current_skin() -> String {
     let mut cached = SKIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if cached.is_none() {
-        let stored = library::read_skin().filter(|name| SKINS.contains(&name.as_str()));
+        let stored = library::read_setting("skin").filter(|name| SKINS.contains(&name.as_str()));
         *cached = Some(stored.unwrap_or_else(|| DEFAULT_SKIN.to_owned()));
     }
     cached.clone().unwrap_or_else(|| DEFAULT_SKIN.to_owned())
+}
+
+/// Whether the editor draws its 3D decoration. Remembered like the skin —
+/// a preference, on disk — and defaulting to on: the machinery only runs
+/// while an editor is open, and it never shares a thread with the audio.
+static FX3D: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+fn fx3d() -> bool {
+    let mut cached = FX3D.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cached.is_none() {
+        *cached = Some(library::read_setting("fx3d").as_deref() != Some("0"));
+    }
+    cached.unwrap_or(true)
+}
+
+fn choose_fx3d(on: bool) -> bool {
+    let mut cached = FX3D.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cached = Some(on);
+    library::write_setting("fx3d", if on { "1" } else { "0" })
 }
 
 fn choose_skin(name: &str) -> bool {
@@ -115,7 +135,7 @@ fn choose_skin(name: &str) -> bool {
     }
     let mut cached = SKIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *cached = Some(name.to_owned());
-    library::write_skin(name)
+    library::write_setting("skin", name)
 }
 
 /// Answers a request from the page: the curve library on disk.
@@ -144,6 +164,13 @@ pub(crate) fn message(text: &str) -> Option<String> {
         // project. Nothing is echoed back — the page already applied it.
         "skin" => {
             choose_skin(rest);
+            None
+        }
+        // The 3D decoration costs GPU time on the main thread and nothing
+        // at all on the audio thread, but a machine is a machine: it can be
+        // turned off, and that choice is remembered.
+        "fx3d" => {
+            choose_fx3d(rest == "1");
             None
         }
         _ => None,
@@ -266,7 +293,14 @@ const HTML: &str = r##"<!DOCTYPE html>
   #knob .body { fill: var(--knob-body); stroke: var(--ink); stroke-width: var(--outline); }
   #knob .dot { fill: var(--accent); stroke: var(--ink); stroke-width: 2; }
   .knoblabel { font-weight: 800; letter-spacing: 0.1em; font-size: 12px; }
-  .mascot { display: none; width: 76px; height: 128px; }
+  /* flex: none, or the column squashes the canvas and the drawing
+     inside it stretches with the box. */
+  .mascot { display: none; flex: none; width: 58px; height: 98px; }
+  /* The 3D decoration replaces the flat one when it is both wanted and
+     available; if the context never comes up, the drawing stays. */
+  .mascot3d { display: none; flex: none; width: 58px; height: 98px; }
+  body.fx3d .mascot3d { display: block; }
+  body.fx3d .mascot { display: none !important; }
   .knoblabel b { color: var(--accent-text); }
   .display {
     flex: 1; background: var(--display-bg); border-radius: var(--radius);
@@ -572,6 +606,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       <div class="knoblabel">MIX <b id="mixvalue">--</b></div>
       <!-- Decoration, drawn inline so the binary stays the whole plugin.
            Only one skin shows it; the others collapse it to nothing. -->
+      <canvas class="mascot3d" id="mascot3d" width="152" height="256"></canvas>
       <svg class="mascot" viewBox="0 0 62 104" aria-hidden="true">
         <g class="sparkles">
           <path d="M6 18 L8 24 L14 26 L8 28 L6 34 L4 28 L-2 26 L4 24 Z"/>
@@ -621,6 +656,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   // The drawn curve: control points, the entry-fade width to draw it with,
   // and whether the pointer is currently editing it.
   let customPoints = null, customAttack = 0, drawing = false, lastSent = 0;
+  let wants3d = true;
   // Peak input level per bucket, published by the audio thread and drawn
   // behind the curve. Uncoordinated by design — see RtContext::set_scope.
   let scope = null;
@@ -927,13 +963,240 @@ const HTML: &str = r##"<!DOCTYPE html>
   knob.addEventListener('pointerup', endDrag);
   knob.addEventListener('pointercancel', endDrag);
 
+  // ---- the 3D mascot ----------------------------------------------------
+  // Raw WebGL, no library: the plugin is one HTML string with no way to
+  // fetch anything, so the renderer, the mesh and the texture are all built
+  // here. It is a lathe — a bottle is a profile spun around an axis — which
+  // is both how the shape is made and why it costs nothing to describe.
+  //
+  // None of this can touch the audio: the page's only line to it is the
+  // scope array, read at the refresh rate. This is GPU work on the main
+  // thread, and it stops existing when the editor closes.
+  let gl = null, program = null, buffers = null, spin = 0, lastFrame = 0, pulse = 0;
+
+  const VERTEX_SHADER = `
+    attribute vec3 position; attribute vec3 normal; attribute vec2 uv;
+    uniform mat4 mvp; uniform mat4 model; uniform float squash;
+    varying vec3 vNormal; varying vec2 vUv;
+    void main() {
+      vec3 p = position; p.y *= squash; p.xz *= 1.0 + (1.0 - squash) * 1.6;
+      vNormal = mat3(model) * normal;
+      vUv = uv;
+      gl_Position = mvp * vec4(p, 1.0);
+    }`;
+
+  // Deliberately unsophisticated: one hard light, a rim, no gamma, nearest
+  // texels. That is the look being asked for, and it is also the cheapest
+  // thing that reads as glass.
+  const FRAGMENT_SHADER = `
+    precision mediump float;
+    uniform sampler2D tex;
+    varying vec3 vNormal; varying vec2 vUv;
+    void main() {
+      vec3 n = normalize(vNormal);
+      float key = max(dot(n, normalize(vec3(-0.4, 0.6, 0.8))), 0.0);
+      float rim = pow(1.0 - abs(n.z), 3.0);
+      vec3 base = texture2D(tex, vUv).rgb;
+      vec3 lit = base * (0.42 + 0.75 * key) + vec3(0.85, 0.9, 1.0) * rim * 0.5;
+      gl_FragColor = vec4(lit, 1.0);
+    }`;
+
+  // Bottle profile: [height 0..1 from the base, radius]. A caguama is a
+  // fat body, a short shoulder and a long neck.
+  const PROFILE = [
+    [0.00, 0.00], [0.01, 0.34], [0.03, 0.40], [0.42, 0.41], [0.52, 0.40],
+    [0.60, 0.36], [0.66, 0.27], [0.71, 0.18], [0.75, 0.145], [0.92, 0.14],
+    [0.95, 0.17], [0.97, 0.165], [0.985, 0.13], [1.00, 0.00],
+  ];
+  const SIDES = 14;   // low on purpose: the facets are the point
+
+  function buildMesh() {
+    const position = [], normal = [], uv = [], index = [];
+    for (let ring = 0; ring < PROFILE.length; ring++) {
+      const [y, r] = PROFILE[ring];
+      // Profile tangent, so the normal follows the silhouette.
+      const prev = PROFILE[Math.max(ring - 1, 0)];
+      const next = PROFILE[Math.min(ring + 1, PROFILE.length - 1)];
+      const dy = next[0] - prev[0], dr = next[1] - prev[1];
+      for (let side = 0; side <= SIDES; side++) {
+        const a = (side / SIDES) * Math.PI * 2;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        position.push(r * cos, y - 0.5, r * sin);
+        const nl = Math.hypot(dy, dr) || 1;
+        normal.push((dy / nl) * cos, -dr / nl, (dy / nl) * sin);
+        uv.push(side / SIDES, 1.0 - y);
+      }
+    }
+    const stride = SIDES + 1;
+    for (let ring = 0; ring < PROFILE.length - 1; ring++) {
+      for (let side = 0; side < SIDES; side++) {
+        const a = ring * stride + side, b = a + stride;
+        index.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+    return { position, normal, uv, index };
+  }
+
+  // The texture is painted here rather than shipped: 64x128 of amber glass,
+  // a gold cap and a paper label, at a resolution that shows its own texels.
+  function buildTexture() {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 128;
+    const g = c.getContext('2d');
+    const glass = g.createLinearGradient(0, 0, 64, 0);
+    glass.addColorStop(0, '#3c2408');
+    glass.addColorStop(0.35, '#a4600f');
+    glass.addColorStop(0.55, '#d98a1c');
+    glass.addColorStop(1, '#3a2207');
+    g.fillStyle = glass; g.fillRect(0, 0, 64, 128);
+    g.fillStyle = '#e8b53a'; g.fillRect(0, 0, 64, 12);      // cap
+    g.fillStyle = '#c99a24'; g.fillRect(0, 10, 64, 3);
+    g.fillStyle = '#f6efdc'; g.fillRect(0, 66, 64, 36);     // label
+    g.fillStyle = '#0a1f4d'; g.fillRect(0, 66, 64, 4);
+    g.fillRect(0, 98, 64, 4);
+    g.fillStyle = '#0a1f4d';
+    g.font = '900 italic 15px "Avenir Next", sans-serif';
+    g.textAlign = 'center';
+    g.fillText('ZAPE', 32, 88);
+    g.fillStyle = '#ffffff22';
+    for (let i = 0; i < 128; i += 6) g.fillRect(6, i, 3, 3); // cheap highlight
+    return c;
+  }
+
+  function mat4(values) { return new Float32Array(values); }
+
+  function perspective(fov, aspect, near, far) {
+    const f = 1 / Math.tan(fov / 2), d = near - far;
+    return mat4([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / d, -1,
+                 0, 0, (2 * far * near) / d, 0]);
+  }
+
+  function multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        out[i * 4 + j] = a[j] * b[i * 4] + a[4 + j] * b[i * 4 + 1] +
+                         a[8 + j] * b[i * 4 + 2] + a[12 + j] * b[i * 4 + 3];
+      }
+    }
+    return out;
+  }
+
+  function modelMatrix(yaw, tilt, z) {
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const cx = Math.cos(tilt), sx = Math.sin(tilt);
+    return mat4([cy, sy * sx, -sy * cx, 0,
+                 0, cx, sx, 0,
+                 sy, -cy * sx, cy * cx, 0,
+                 0, 0, z, 1]);
+  }
+
+  function compile(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null;
+  }
+
+  function init3d() {
+    const canvas = document.getElementById('mascot3d');
+    // Old machines, remote sessions, hosts with odd sandboxes: if there is
+    // no context there is no 3D, and the drawn bottle stays.
+    gl = canvas.getContext('webgl', { antialias: true, alpha: true });
+    if (!gl) return false;
+    const vs = compile(gl.VERTEX_SHADER, VERTEX_SHADER);
+    const fs = compile(gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
+    if (!vs || !fs) { gl = null; return false; }
+    program = gl.createProgram();
+    gl.attachShader(program, vs); gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { gl = null; return false; }
+    gl.useProgram(program);
+
+    const mesh = buildMesh();
+    const bind = (data, name, size) => {
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+      const location = gl.getAttribLocation(program, name);
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+    };
+    bind(mesh.position, 'position', 3);
+    bind(mesh.normal, 'normal', 3);
+    bind(mesh.uv, 'uv', 2);
+    const indexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mesh.index), gl.STATIC_DRAW);
+    buffers = { count: mesh.index.length };
+
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, buildTexture());
+    // Nearest, no mipmaps: the era being borrowed from could not afford
+    // filtering either.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    return true;
+  }
+
+  function frame3d(now) {
+    if (!gl) return;
+    // Capped at ~30 Hz: this is decoration next to a meter that updates at
+    // the same rate, and the GPU can spend the rest of its day elsewhere.
+    if (now - lastFrame < 33) { requestAnimationFrame(frame3d); return; }
+    const step = Math.min((now - lastFrame) / 1000, 0.1);
+    lastFrame = now;
+
+    // The audio drives it: loudest bucket of what is leaving the plugin,
+    // so the bottle leans into the beat and settles between them.
+    let level = 0;
+    if (scope) {
+      const half = scope.length / 2;
+      for (let i = half; i < scope.length; i++) level = Math.max(level, scope[i]);
+    }
+    pulse += (level - pulse) * 0.25;
+    spin += step * (0.7 + pulse * 2.2);
+
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const model = modelMatrix(spin, -0.22 + pulse * 0.12, -3.1);
+    const mvp = multiply(perspective(0.72, 152 / 256, 0.1, 12), model);
+    gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mvp'), false, mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(program, 'model'), false, model);
+    // A duck squashes the bottle, so the picture agrees with the audio.
+    gl.uniform1f(gl.getUniformLocation(program, 'squash'), 1.0 - pulse * 0.06);
+    gl.drawElements(gl.TRIANGLES, buffers.count, gl.UNSIGNED_SHORT, 0);
+    requestAnimationFrame(frame3d);
+  }
+
+  function set3d(wanted) {
+    const on = wanted && document.body.dataset.skin === 'tianguis';
+    if (on && !gl && !init3d()) {
+      // No context: fall back to the flat drawing rather than a hole.
+      document.body.classList.remove('fx3d');
+      return;
+    }
+    document.body.classList.toggle('fx3d', on && !!gl);
+    if (on && gl && !lastFrame) requestAnimationFrame(frame3d);
+  }
+
   // ---- skins ------------------------------------------------------------
   // The plugin remembers the choice on disk (a preference, not session
   // state) and pushes it back with the shapes; the page only has to apply
   // it and repaint, because every colour lives in CSS.
-  window.__seco_skin = (id) => {
+  window.__seco_skin = (id, fx3d) => {
+    wants3d = fx3d;
+    set3d(wants3d);
     if (document.body.dataset.skin === id) return;
     document.body.dataset.skin = id;
+    set3d(wants3d);
     buildSkinList();
     // Tiles are painted, not styled: their canvases hold the old skin's
     // colours until something repaints them, and the parameter push that
@@ -967,6 +1230,25 @@ const HTML: &str = r##"<!DOCTYPE html>
       });
       panel.appendChild(row);
     });
+
+    const toggle = document.createElement('div');
+    toggle.className = 'skinrow' + (document.body.classList.contains('fx3d') ? ' on' : '');
+    const mark = document.createElement('div');
+    mark.className = 'swatch';
+    const dot = document.createElement('i');
+    dot.style.background = document.body.classList.contains('fx3d') ? '#ffcf3f' : '#555';
+    mark.appendChild(dot);
+    const label = document.createElement('span');
+    label.textContent = '3D';
+    toggle.appendChild(mark);
+    toggle.appendChild(label);
+    toggle.addEventListener('click', () => {
+      wants3d = !wants3d;
+      set3d(wants3d);
+      post('msg fx3d ' + (wants3d ? 1 : 0));
+      buildSkinList();
+    });
+    panel.appendChild(toggle);
   }
 
   document.getElementById('skin-button').addEventListener('click', () => {
@@ -1220,18 +1502,18 @@ mod tests {
         *SKIN.lock().unwrap() = None;
 
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")), "{js}");
+        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\", ")), "skin missing");
 
         assert!(message("skin rockola").is_none(), "the page already applied it");
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains("__seco_skin(\"rockola\")"), "{js}");
-        assert_eq!(crate::library::read_skin().as_deref(), Some("rockola"));
+        assert!(js.contains("__seco_skin(\"rockola\", "), "skin missing");
+        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("rockola"));
 
         // A name the plugin does not ship goes nowhere: it ends up in a
         // stylesheet selector and in a file.
         message("skin ../../etc/passwd");
         message("skin \"><script>");
-        assert_eq!(crate::library::read_skin().as_deref(), Some("rockola"));
+        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("rockola"));
         *SKIN.lock().unwrap() = None;
     }
 

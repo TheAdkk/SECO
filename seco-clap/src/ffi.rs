@@ -434,6 +434,17 @@ pub struct ClapPluginState {
         unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapIStream) -> bool,
 }
 
+/// `clap_host_state_t` — `ext/state.h:36-41`. Looked up under the same
+/// `clap.state` id as the plugin side.
+#[repr(C)]
+pub struct ClapHostState {
+    /// `[main-thread]` — "tell the host that the plugin state has changed
+    /// and should be saved again" (`ext/state.h:37`). Parameter changes are
+    /// implicitly dirty (`ext/state.h:38`); everything else is not, which
+    /// is why an editor-written state block has to say so.
+    pub mark_dirty: unsafe extern "C" fn(host: *const ClapHost),
+}
+
 // ------------------------------------------------------------ ext/gui.h
 
 /// `CLAP_EXT_GUI` — `ext/gui.h:47`.

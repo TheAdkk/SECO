@@ -38,6 +38,7 @@ use crate::ffi::{
     CLAP_EXT_TIMER_SUPPORT, CLAP_WINDOW_API_COCOA, ClapGuiResizeHints, ClapHost,
     ClapHostTimerSupport, ClapId, ClapPlugin, ClapPluginGui, ClapPluginTimerSupport, ClapWindow,
 };
+use crate::instance::gui_queue::{EditorMsg, parse_msg};
 use crate::instance::{self, Instance};
 
 /// The plugin's page, or `None` when it declares no editor — in which case
@@ -86,6 +87,7 @@ pub(crate) fn empty_slot() -> GuiSlot {
 pub(crate) struct HandlerIvars {
     plugin: *const ClapPlugin,
     enqueue: unsafe fn(*const ClapPlugin, instance::gui_queue::GuiMsg),
+    publish_state: unsafe fn(*const ClapPlugin, &[u8]),
 }
 
 define_class!(
@@ -114,28 +116,19 @@ define_class!(
             // SAFETY: the handler is unhooked before the gui (and long
             // before the plugin) is destroyed, so `plugin` is live; we are
             // on the main thread (WebKit contract).
-            unsafe { (self.ivars().enqueue)(self.ivars().plugin, msg) };
+            unsafe {
+                match msg {
+                    EditorMsg::Param(msg) => {
+                        (self.ivars().enqueue)(self.ivars().plugin, msg)
+                    }
+                    EditorMsg::State(block) => {
+                        (self.ivars().publish_state)(self.ivars().plugin, block.as_bytes())
+                    }
+                }
+            };
         }
     }
 );
-
-/// Wire format from JS, deliberately dumb: "begin <i>", "set <i> <plain>",
-/// "end <i>".
-fn parse_msg(text: &str) -> Option<instance::gui_queue::GuiMsg> {
-    use instance::gui_queue::GuiMsg;
-    let mut parts = text.split_ascii_whitespace();
-    let verb = parts.next()?;
-    let index: usize = parts.next()?.parse().ok()?;
-    match verb {
-        "begin" => Some(GuiMsg::GestureBegin(index)),
-        "end" => Some(GuiMsg::GestureEnd(index)),
-        "set" => {
-            let value: f64 = parts.next()?.parse().ok()?;
-            value.is_finite().then_some(GuiMsg::Set(index, value))
-        }
-        _ => None,
-    }
-}
 
 /// Assembles the gui vtable for a concrete plugin type.
 pub(crate) struct GuiImpl<P>(PhantomData<P>);
@@ -237,6 +230,7 @@ unsafe extern "C" fn create<P: Plugin>(
     let handler = ParamMessageHandler::alloc(mtm).set_ivars(HandlerIvars {
         plugin,
         enqueue: instance::queue_gui_param_change::<P>,
+        publish_state: instance::publish_editor_state::<P>,
     });
     // SAFETY (objc2 contract): plain NSObject init on the allocated object.
     let handler: Retained<ParamMessageHandler> = unsafe { msg_send![super(handler), init] };

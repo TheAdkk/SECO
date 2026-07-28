@@ -85,6 +85,12 @@ pub(crate) struct Instance<P: Plugin> {
     /// written-once/read-only field, like the gui slot.
     #[cfg(all(feature = "gui", target_os = "macos"))]
     pub(crate) host_params: UnsafeCell<*const ClapHostParams>,
+    /// Host state extension, same lookup and same field discipline. Used to
+    /// mark the session dirty when the editor writes a state block —
+    /// parameter changes are implicitly dirty, a state block is not
+    /// (ext/state.h:37-38).
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    pub(crate) host_state: UnsafeCell<*const crate::ffi::ClapHostState>,
     /// GUI -> host parameter changes, pending until the next process() or
     /// flush() drains them. One slot per param: value coalesces to the
     /// latest (a fast drag becomes one event per drain), gesture edges are
@@ -167,6 +173,8 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
         host,
         #[cfg(all(feature = "gui", target_os = "macos"))]
         host_params: UnsafeCell::new(ptr::null()),
+        #[cfg(all(feature = "gui", target_os = "macos"))]
+        host_state: UnsafeCell::new(ptr::null()),
         #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
         gui_pending: std::array::from_fn(|_| PendingParam::default()),
         #[cfg(debug_assertions)]
@@ -297,17 +305,107 @@ pub(crate) mod gui_queue {
         }
     }
 
-    /// A parsed message from the editor.
+    /// A parsed parameter message from the editor.
     #[derive(Clone, Copy, Debug)]
     pub(crate) enum GuiMsg {
         GestureBegin(usize),
         Set(usize, f64),
         GestureEnd(usize),
     }
+
+    /// What a page can send. Parameters take CLAP's own path; a state block
+    /// goes to the plugin's state slot.
+    #[derive(Debug)]
+    pub(crate) enum EditorMsg<'a> {
+        Param(GuiMsg),
+        /// Opaque payload — the framework stores the bytes, the plugin
+        /// decides what they mean.
+        State(&'a str),
+    }
+
+    /// Wire format from JS, deliberately dumb: "begin <i>", "set <i>
+    /// <plain>", "end <i>", and "state <payload>" where the payload is the
+    /// rest of the message verbatim, spaces and all.
+    ///
+    /// Lives here rather than next to the WebKit plumbing because the
+    /// protocol is not platform-specific — this way it is tested on every
+    /// platform, not only where the editor compiles.
+    pub(crate) fn parse_msg(text: &str) -> Option<EditorMsg<'_>> {
+        if let Some(block) = text.strip_prefix("state ") {
+            return Some(EditorMsg::State(block));
+        }
+        // "state" with no payload is a legal message: it clears the block.
+        if text == "state" {
+            return Some(EditorMsg::State(""));
+        }
+        let mut parts = text.split_ascii_whitespace();
+        let verb = parts.next()?;
+        let index: usize = parts.next()?.parse().ok()?;
+        let msg = match verb {
+            "begin" => GuiMsg::GestureBegin(index),
+            "end" => GuiMsg::GestureEnd(index),
+            "set" => {
+                let value: f64 = parts.next()?.parse().ok()?;
+                if !value.is_finite() {
+                    return None;
+                }
+                GuiMsg::Set(index, value)
+            }
+            _ => return None,
+        };
+        Some(EditorMsg::Param(msg))
+    }
 }
 
 #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
 pub(crate) use gui_queue::PendingParam;
+
+/// Stores a state block written by the editor and tells the host the
+/// session changed.
+///
+/// The editor runs on the main thread — WebKit delivers its messages there,
+/// and every clap.gui callback is `[main-thread]` — which is exactly where
+/// the state block may be written, so this needs no queue of its own: it
+/// hands the bytes straight to the slot, and the triple buffer carries them
+/// to the audio thread at the next process().
+///
+/// The bytes are opaque here. A page sends text and the plugin parses it in
+/// `apply_state`; a page wanting binary encodes it (`btoa`) itself. The
+/// framework's job is to store exactly what was sent and hand back exactly
+/// that.
+///
+/// A block that does not fit is dropped rather than truncated, and the host
+/// is not told the session changed — a half-written curve is not state
+/// worth saving.
+///
+/// # Safety
+///
+/// `plugin` must be a live instance created by [`create`], and this must
+/// run on the main thread (the gui/webview callbacks all do).
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+pub(crate) unsafe fn publish_editor_state<P: Plugin>(plugin: *const ClapPlugin, bytes: &[u8]) {
+    // SAFETY: live instance per this function's contract.
+    let inst = unsafe { shared::<P>(plugin) };
+    // SAFETY: `[main-thread]` per this function's contract.
+    let stored = unsafe { inst.plugin_state.publish(bytes) };
+
+    // Parameter edits are implicitly dirty; a state block is not
+    // (ext/state.h:37-38). Without this the host would let the user close
+    // the session and lose the edit. A dropped block says nothing.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    if stored {
+        // SAFETY: main-thread-only field, written once in init.
+        let host_state = unsafe { *inst.host_state.get() };
+        if !host_state.is_null() && !inst.host.is_null() {
+            // SAFETY: the extension pointer stays valid until destroy
+            // (host.h:20-25); mark_dirty is [main-thread] (ext/state.h:39).
+            unsafe { ((*host_state).mark_dirty)(inst.host) };
+        }
+    }
+    // No editor build, no host to notify.
+    #[cfg(not(all(feature = "gui", target_os = "macos")))]
+    let _ = stored;
+}
 
 /// Queues a GUI-originated parameter change and asks the host to flush.
 ///
@@ -480,6 +578,13 @@ unsafe extern "C" fn plugin_init<P: Plugin>(_plugin: *const ClapPlugin) -> bool 
             // SAFETY: main-thread-only field, written in init before any
             // possible reader (the gui/webview callbacks all come later).
             unsafe { *inst.host_params.get() = ext.cast() };
+
+            // SAFETY: as above.
+            let ext = unsafe {
+                ((*inst.host).get_extension)(inst.host, crate::ffi::CLAP_EXT_STATE.as_ptr())
+            };
+            // SAFETY: as above.
+            unsafe { *inst.host_state.get() = ext.cast() };
         }
     }
     true
@@ -927,6 +1032,148 @@ mod tests {
         assert_eq!(unsafe { state_of(loader) }.applications, 1);
         // SAFETY: created above, not used again.
         unsafe { ((*loader).destroy)(loader) };
+    }
+
+    /// The editor's wire protocol, tested here rather than next to the
+    /// WebKit plumbing so it runs on every platform.
+    #[test]
+    fn the_editor_protocol_parses_state_blocks() {
+        use gui_queue::{EditorMsg, GuiMsg, parse_msg};
+
+        // A block is taken verbatim: spaces, commas, whatever the page
+        // chose. The framework does not read it.
+        assert!(matches!(
+            parse_msg("state 0.1,0.2, 0.3"),
+            Some(EditorMsg::State("0.1,0.2, 0.3"))
+        ));
+        // Clearing the block is a message, not a missing one.
+        assert!(matches!(parse_msg("state"), Some(EditorMsg::State(""))));
+        assert!(matches!(parse_msg("state "), Some(EditorMsg::State(""))));
+
+        // Parameters still take their own path.
+        assert!(matches!(
+            parse_msg("set 2 0.5"),
+            Some(EditorMsg::Param(GuiMsg::Set(2, value))) if value == 0.5
+        ));
+        assert!(matches!(
+            parse_msg("begin 1"),
+            Some(EditorMsg::Param(GuiMsg::GestureBegin(1)))
+        ));
+
+        // Junk is dropped, not guessed at: this input comes from a webview.
+        assert!(parse_msg("").is_none());
+        assert!(parse_msg("stateful 1").is_none());
+        assert!(parse_msg("set 2 nan").is_none());
+        assert!(parse_msg("set two 0.5").is_none());
+        assert!(parse_msg("set 2").is_none());
+    }
+
+    /// The editor writing state is the point of the whole channel: the
+    /// bytes must reach the plugin on the audio thread, unchanged.
+    #[test]
+    fn an_editor_state_block_reaches_the_plugin() {
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: live instance; [main-thread] role in a single-threaded
+        // test, which is where webview messages arrive.
+        unsafe { publish_editor_state::<HalfGain>(plugin, b"0.1,0.2,0.3") };
+        run_one_block(plugin);
+
+        // SAFETY: single-threaded test, no other borrow live.
+        assert_eq!(unsafe { state_of(plugin) }.applied.as_deref(), Some(&b"0.1,0.2,0.3"[..]));
+
+        // And it is what `clap.state` saves: an editor edit survives the
+        // session even though the plugin never handed anything back.
+        let blob = save_state(plugin);
+        assert!(
+            blob.windows(11).any(|window| window == b"0.1,0.2,0.3"),
+            "the edited block must be in the saved state"
+        );
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// A page can always send more than the slot holds. Dropping the block
+    /// keeps the previous one; truncating would hand the plugin a curve
+    /// that is silently half a curve.
+    #[test]
+    fn an_oversized_editor_block_is_dropped_not_truncated() {
+        let plugin = create::<HalfGain>(ptr::null());
+        // SAFETY: as in the test above.
+        unsafe { publish_editor_state::<HalfGain>(plugin, b"good") };
+        run_one_block(plugin);
+
+        let too_big = vec![b'9'; crate::MAX_PLUGIN_STATE + 1];
+        // SAFETY: as above.
+        unsafe { publish_editor_state::<HalfGain>(plugin, &too_big) };
+        run_one_block(plugin);
+
+        // SAFETY: single-threaded test, no other borrow live.
+        let state = unsafe { state_of(plugin) };
+        assert_eq!(state.applied.as_deref(), Some(&b"good"[..]));
+        assert_eq!(state.applications, 1, "nothing new should have been delivered");
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
+    /// A state block is not implicitly dirty the way a parameter change is
+    /// (ext/state.h:37-38): without `mark_dirty` the host lets the user
+    /// close the session and the edit is gone. Needs the editor build —
+    /// `cargo test -p seco-clap --features gui` — since that is where the
+    /// host lookup lives.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    #[test]
+    fn an_editor_state_block_marks_the_session_dirty() {
+        use std::sync::atomic::AtomicUsize;
+
+        static DIRTY: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn mark_dirty(_host: *const ClapHost) {
+            DIRTY.fetch_add(1, Relaxed);
+        }
+        unsafe extern "C" fn get_extension(
+            _host: *const ClapHost,
+            id: *const c_char,
+        ) -> *const std::ffi::c_void {
+            static HOST_STATE: crate::ffi::ClapHostState =
+                crate::ffi::ClapHostState { mark_dirty };
+            // SAFETY: the plugin passes a NUL-terminated extension id.
+            if unsafe { CStr::from_ptr(id) } == crate::ffi::CLAP_EXT_STATE {
+                (&raw const HOST_STATE).cast()
+            } else {
+                ptr::null()
+            }
+        }
+        unsafe extern "C" fn noop(_host: *const ClapHost) {}
+
+        let host = ClapHost {
+            clap_version: crate::ffi::CLAP_VERSION,
+            host_data: ptr::null_mut(),
+            name: c"seco-tests".as_ptr(),
+            vendor: c"".as_ptr(),
+            url: c"".as_ptr(),
+            version: c"0.0.0".as_ptr(),
+            get_extension,
+            request_restart: noop,
+            request_process: noop,
+            request_callback: noop,
+        };
+
+        let plugin = create::<HalfGain>(&raw const host);
+        // SAFETY: live instance; init is where host extensions are resolved.
+        assert!(unsafe { ((*plugin).init)(plugin) });
+
+        // SAFETY: [main-thread] role in a single-threaded test.
+        unsafe { publish_editor_state::<HalfGain>(plugin, b"edited") };
+        assert_eq!(DIRTY.load(Relaxed), 1, "the host was never told to save");
+
+        // A block that does not fit is not state worth saving.
+        let too_big = vec![b'9'; crate::MAX_PLUGIN_STATE + 1];
+        // SAFETY: as above.
+        unsafe { publish_editor_state::<HalfGain>(plugin, &too_big) };
+        assert_eq!(DIRTY.load(Relaxed), 1, "a dropped block must not mark the session dirty");
+
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
     }
 
     /// A session saved before the plugin had a state block must *clear* it,

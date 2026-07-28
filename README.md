@@ -120,6 +120,23 @@ than left alone: a preset saved before a plugin grew a curve must clear
 that curve, not inherit whatever was drawn last
 (`a_version_1_state_clears_the_plugin_block`).
 
+The editor writes blocks through the same slot. It needs no queue of its
+own — WebKit delivers its messages on the main thread, which is exactly
+where the block may be written — so a `state <payload>` message goes
+straight in and the triple buffer carries it to the audio thread at the
+next `process()`. The payload is opaque: the framework stores the bytes a
+page sent and hands back exactly those, and the plugin decides what they
+mean.
+
+Two details that are only obvious once they bite. A block that does not fit
+is dropped, never truncated — half a saved curve is worse than no curve.
+And the host is told with `clap_host_state.mark_dirty`: a parameter change
+is implicitly dirty, a state block is not (ext/state.h:37-38), so without
+that call the DAW would let the user close the session and lose the edit.
+The wire protocol lives in `instance::gui_queue` rather than beside the
+WebKit plumbing, so it is tested on every platform and not only where the
+editor compiles.
+
 ### The unsafe audit (two real UB holes)
 
 Auditing every `unsafe` against *hostile-but-legal* host inputs — instead of

@@ -1246,7 +1246,10 @@ const HTML: &str = r##"<!DOCTYPE html>
       for (let i = half; i < scope.length; i++) level = Math.max(level, scope[i]);
     }
     pulse += (level - pulse) * 0.25;
-    spin += step * (0.7 + pulse * 2.2);
+    // Mix drives the speed, so the bottle is a readout and not an ornament:
+    // at 100% it runs, at 0% it stops, because at 0% the plugin is doing
+    // nothing. The audio rides on top of that.
+    spin += step * activeMix * (0.7 + pulse * 2.2);
 
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);

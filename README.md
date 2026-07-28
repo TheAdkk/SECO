@@ -233,8 +233,9 @@ region a duck curve never occupies.
 
 ### 3D in the editor, and what it costs
 
-The default skin's mascot is a real mesh: a lathed bottle in raw WebGL,
-spinning, leaning into the beat. No library — the plugin is one HTML string
+The mascot is a real mesh: a lathed bottle in raw WebGL, spun by Mix and
+leaning into the beat. It is a readout rather than an ornament — at 100% it
+runs, at 0% it stops, because at 0% the plugin is doing nothing. No library — the plugin is one HTML string
 with no way to fetch anything — so the renderer, the mesh and the texture
 are all generated in the page. A bottle is a surface of revolution, which is
 both how the shape is described (fourteen radial segments over a profile of

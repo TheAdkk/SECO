@@ -376,7 +376,17 @@ const HTML: &str = r##"<!DOCTYPE html>
     transform: translate(var(--shadow-x), var(--shadow-y));
     box-shadow: 0 0 0 var(--shadow);
   }
+  .tile { position: relative; }
   .tile canvas { width: 100%; height: 30px; display: block; }
+  /* The last slot is the one you draw in, and until it says so it is
+     sixteen identical buttons with one imposter. */
+  .tile.custom { border-style: dashed; }
+  .tile.custom::after {
+    content: "DRAW"; position: absolute; top: 2px; left: 4px;
+    font-size: 7px; font-weight: 900; letter-spacing: 0.1em;
+    color: var(--accent-text); opacity: 0.85;
+  }
+  .tile.custom.on::after { color: var(--on-accent); opacity: 0.7; }
   .tile.on {
     background: var(--accent);
     box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow), 0 0 14px var(--glow);
@@ -844,7 +854,7 @@ const HTML: &str = r##"<!DOCTYPE html>
     // One per shipped shape, plus the drawn one.
     for (let index = 0; index <= CURVE_CUSTOM; index++) {
       const tile = document.createElement('div');
-      tile.className = 'tile';
+      tile.className = index === CURVE_CUSTOM ? 'tile custom' : 'tile';
       const canvas = document.createElement('canvas');
       tile.appendChild(canvas);
       tile.addEventListener('click', () => gesture(CURVE, index));
@@ -865,7 +875,11 @@ const HTML: &str = r##"<!DOCTYPE html>
       const ctx = tiles[i].__canvas.getContext('2d');
       ctx.clearRect(0, 0, tiles[i].__canvas.width, tiles[i].__canvas.height);
       // The grey line is unreadable on the selected tile's yellow.
-      if (points) stroke(ctx, points, 1, ink(i === active ? 'tile-line-on' : 'tile-line'), 3, false);
+      // The drawn slot keeps the accent when it is not selected, so it
+      // reads as yours rather than as a seventeenth preset.
+      const colour = i === active ? ink('tile-line-on')
+                   : (i === CURVE_CUSTOM ? ink('curve') : ink('tile-line'));
+      if (points) stroke(ctx, points, 1, colour, 3, false);
     }
   }
 

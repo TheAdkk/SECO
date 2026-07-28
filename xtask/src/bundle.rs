@@ -139,7 +139,7 @@ pub fn install(artifact: &Path, format: Format) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+pub fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| format!("could not create {}: {e}", to.display()))?;
     let entries =
         std::fs::read_dir(from).map_err(|e| format!("could not read {}: {e}", from.display()))?;
@@ -162,7 +162,7 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// Removes a previous artifact, file or bundle directory. Missing is fine.
-fn remove_existing(path: &Path) -> Result<(), String> {
+pub fn remove_existing(path: &Path) -> Result<(), String> {
     let result = if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else {

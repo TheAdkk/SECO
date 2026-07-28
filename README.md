@@ -40,7 +40,7 @@ history is worth more here than the separation would be.
 | `plugins/zape` | The plugin: multiplies audio by a gain curve indexed by the host's beat position, plus its editor page. No sidechain input, no signal analysis. | none |
 | `xtask` | Build tasks (`cargo xtask bundle zape --release --install`): builds the crate and assembles the platform artifact. Not shipped, not linked into any plugin. | `dlopen`/`dlsym` only, to read the built plugin's own descriptor |
 
-Build and install: [docs/building.md](docs/building.md). CLAP header findings
+Build, install and package: [docs/building.md](docs/building.md). CLAP header findings
 with citations and the empirical transport results: [docs/clap-notes.md](docs/clap-notes.md).
 
 A plugin is `impl Plugin` plus `seco_export!(T)`; everything else — the entry

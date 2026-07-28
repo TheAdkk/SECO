@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo xtask bundle zape [--release] [--features gui] [--vst3] [--install]
+//! cargo xtask dist zape
 //! ```
 //!
 //! It builds the plugin crate, then assembles the artifact each platform's
@@ -13,6 +14,7 @@
 
 mod bundle;
 mod descriptor;
+mod dist;
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -21,12 +23,16 @@ use bundle::Format;
 
 const USAGE: &str = "\
 usage: cargo xtask bundle <package> [options]
+       cargo xtask dist <package>
 
-options:
+bundle options:
   --release            optimized build (default: debug)
   --features <list>    comma- or space-separated cargo features
   --vst3               emit a .vst3 bundle (implies the vst3 feature)
   --install            copy the result into the user plug-in folder
+
+dist builds the release CLAP and VST3 with the editor, and zips them with
+an installer for someone else's machine. macOS only so far.
 ";
 
 fn main() -> ExitCode {
@@ -49,7 +55,15 @@ struct Args {
 
 fn run() -> Result<(), String> {
     let mut argv = std::env::args().skip(1);
-    match argv.next().as_deref() {
+    let command = argv.next();
+    match command.as_deref() {
+        Some("dist") => {
+            let package = argv.next().ok_or_else(|| format!("missing package\n\n{USAGE}"))?;
+            if argv.next().is_some() {
+                return Err(format!("dist takes only a package name\n\n{USAGE}"));
+            }
+            return dist_command(&package);
+        }
         Some("bundle") => {}
         Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
@@ -106,7 +120,8 @@ fn parse_bundle_args(argv: impl Iterator<Item = String>) -> Result<Args, String>
     })
 }
 
-fn bundle_command(args: &Args) -> Result<(), String> {
+/// Builds a plugin and assembles one artifact from it.
+fn build_artifact(args: &Args) -> Result<(PathBuf, descriptor::Descriptor), String> {
     cargo_build(args)?;
 
     let profile = if args.release { "release" } else { "debug" };
@@ -117,6 +132,11 @@ fn bundle_command(args: &Args) -> Result<(), String> {
 
     let descriptor = descriptor::read(&library)?;
     let artifact = bundle::assemble(&library, &args.package, &descriptor, args.format)?;
+    Ok((artifact, descriptor))
+}
+
+fn bundle_command(args: &Args) -> Result<(), String> {
+    let (artifact, _) = build_artifact(args)?;
     println!("built {}", artifact.display());
 
     if args.install {
@@ -125,6 +145,41 @@ fn bundle_command(args: &Args) -> Result<(), String> {
     } else {
         println!("install with: cargo xtask bundle {} ... --install", args.package);
     }
+    Ok(())
+}
+
+/// Builds both faces at release with the editor on, then packages them.
+///
+/// Two cargo builds rather than one, deliberately: the vst3 feature links
+/// clap-wrapper's C++ into the binary, and the CLAP that ships should be the
+/// pure-Rust one the README claims it is. The same dylib would have worked
+/// for both faces and would have made that sentence false.
+fn dist_command(package: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("dist only builds macOS packages so far".into());
+    }
+    let editor_only = Args {
+        package: package.to_owned(),
+        release: true,
+        features: vec!["gui".to_owned()],
+        format: Format::Clap,
+        install: false,
+    };
+    let (clap_bundle, descriptor) = build_artifact(&editor_only)?;
+
+    let with_wrapper = Args {
+        features: vec!["gui".to_owned(), "vst3".to_owned()],
+        format: Format::Vst3,
+        ..editor_only
+    };
+    let (vst3_bundle, _) = build_artifact(&with_wrapper)?;
+
+    let dist_dir = target_dir()?.join("dist");
+    std::fs::create_dir_all(&dist_dir)
+        .map_err(|e| format!("could not create {}: {e}", dist_dir.display()))?;
+    let archive =
+        dist::package(package, &clap_bundle, &vst3_bundle, &descriptor, &dist_dir)?;
+    println!("packaged {}", archive.display());
     Ok(())
 }
 

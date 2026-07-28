@@ -324,12 +324,12 @@ mod tests {
         assert_eq!(read_setting("skin"), None, "no file yet means no preference");
         assert!(write_setting("skin", "tianguis"));
         assert_eq!(read_setting("skin").as_deref(), Some("tianguis"));
-        assert!(write_setting("skin", "rockola"));
-        assert_eq!(read_setting("skin").as_deref(), Some("rockola"));
+        assert!(write_setting("skin", "jukebox"));
+        assert_eq!(read_setting("skin").as_deref(), Some("jukebox"));
         // A second preference does not disturb the first.
         assert!(write_setting("fx3d", "0"));
         assert_eq!(read_setting("fx3d").as_deref(), Some("0"));
-        assert_eq!(read_setting("skin").as_deref(), Some("rockola"));
+        assert_eq!(read_setting("skin").as_deref(), Some("jukebox"));
         // And the curve library is oblivious to both.
         assert!(list().is_empty());
     }

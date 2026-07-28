@@ -88,10 +88,11 @@ pub(crate) fn frame(scope: &[f32]) -> Option<String> {
 /// Checked here rather than trusted from the page: the value is written to
 /// disk and pushed back into a stylesheet selector, so it stays a closed
 /// set of identifiers we chose.
-const SKINS: [&str; 5] = ["tianguis", "miedo", "azucar", "rockola", "zape"];
+const SKINS: [&str; 5] = ["dread", "tianguis", "sugar", "jukebox", "plain"];
 
-/// Loud, gold-on-navy, and the reason this plugin has skins at all.
-const DEFAULT_SKIN: &str = "tianguis";
+/// The sickly one. Tianguis is louder and came first, but this is the one
+/// that can sit open for an eight-hour session.
+const DEFAULT_SKIN: &str = "dread";
 
 /// The chosen skin, read from disk once and kept here after.
 ///
@@ -345,7 +346,8 @@ const HTML: &str = r##"<!DOCTYPE html>
     transform: rotate(-7deg); padding: 3px 9px; border-radius: 4px;
     background: var(--accent); color: var(--on-accent);
     border: 2px solid var(--ink); box-shadow: 2px 2px 0 var(--ink);
-    font-weight: 900; font-size: 10px; letter-spacing: 0.12em;
+    font-weight: 900; font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; max-width: 62%;
   }
   .rivets { position: absolute; inset: 6px; z-index: 3; pointer-events: none; }
   .rivets i {
@@ -521,9 +523,9 @@ const HTML: &str = r##"<!DOCTYPE html>
     background-image: linear-gradient(#ffffff18, #00000022);
   }
 
-  /* Miedo: sickly farmhouse palette — bruised purple, sour teal, dusty
+  /* Dread: sickly farmhouse palette — bruised purple, sour teal, dusty
      pink. Thin nervous outlines, everything slightly off-square. */
-  body[data-skin="miedo"] {
+  body[data-skin="dread"] {
     --glow: #4fb3a53d; --streak: #ffffff0a; --chrome-dot: #b9a7c9;
     --plaque: linear-gradient(#4a3860, #2b2040);
     --font: 700 13px/1.2 "Avenir Next", -apple-system, sans-serif;
@@ -542,12 +544,12 @@ const HTML: &str = r##"<!DOCTYPE html>
     --wave-dry: rgba(217, 140, 174, 0.15); --wave-wet: rgba(232, 216, 240, 0.42);
     --tile-line: #b9a7c9; --tile-line-on: #0f0a17;
   }
-  body[data-skin="miedo"] .tile:nth-child(odd) { transform: rotate(-0.8deg); }
-  body[data-skin="miedo"] .tile:nth-child(even) { transform: rotate(0.6deg); }
+  body[data-skin="dread"] .tile:nth-child(odd) { transform: rotate(-0.8deg); }
+  body[data-skin="dread"] .tile:nth-child(even) { transform: rotate(0.6deg); }
 
-  /* Azúcar: candy pinks and mints over hard black ink, the way a
+  /* Sugar: candy pinks and mints over hard black ink, the way a
      Saturday-morning show fills a screen. */
-  body[data-skin="azucar"] {
+  body[data-skin="sugar"] {
     --glow: #ff4fa33d; --streak: #17121a0d; --chrome-dot: #ffffff;
     --plaque: linear-gradient(#ffffff, #ffd7ea);
     --font: 800 13px/1.2 "Avenir Next", -apple-system, sans-serif;
@@ -571,9 +573,9 @@ const HTML: &str = r##"<!DOCTYPE html>
     --tile-line: #17121a; --tile-line-on: #ffffff;
   }
 
-  /* Rockola: diner black, banana yellow and orange, chrome-free and
+  /* Jukebox: diner black, banana yellow and orange, chrome-free and
      unapologetically loud about it. */
-  body[data-skin="rockola"] {
+  body[data-skin="jukebox"] {
     --glow: #ff7a1a4d; --streak: #ffffff0a; --chrome-dot: #ffd400;
     --plaque: linear-gradient(#322c22, #17130d);
     --font: 800 13px/1.2 "Avenir Next", "Futura", -apple-system, sans-serif;
@@ -595,8 +597,8 @@ const HTML: &str = r##"<!DOCTYPE html>
     --tile-line: #d8c9a4; --tile-line-on: #14110c;
   }
 
-  /* Zape: what the plugin looked like before it had skins. */
-  body[data-skin="zape"] {
+  /* Plain: what the plugin looked like before it had skins. */
+  body[data-skin="plain"] {
     --glow: #ffd40018; --streak: transparent; --chrome-dot: #2a2a2a;
     --plaque: #181818;
     --font: 500 13px/1.2 -apple-system, sans-serif;
@@ -675,7 +677,7 @@ const HTML: &str = r##"<!DOCTYPE html>
     </div>
     <div class="display">
       <canvas id="curve"></canvas>
-      <div class="sticker" aria-hidden="true">SIN CLICKS</div>
+      <div class="sticker" id="sticker" aria-hidden="true"></div>
       <div class="rivets" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
     </div>
   </div>
@@ -692,12 +694,31 @@ const HTML: &str = r##"<!DOCTYPE html>
   // Skins are CSS: the canvas reads its colours back out of the same
   // variables the stylesheet sets, so a new skin never touches this file.
   const SKINS = [
+    { id: 'dread', label: 'DREAD', dots: ['#241a33', '#4fb3a5', '#d98cae'] },
     { id: 'tianguis', label: 'TIANGUIS', dots: ['#0a1f4d', '#ffcf3f', '#cddcff'] },
-    { id: 'miedo', label: 'MIEDO', dots: ['#241a33', '#4fb3a5', '#d98cae'] },
-    { id: 'azucar', label: 'AZUCAR', dots: ['#ffe3f1', '#ff4fa3', '#8ef0d0'] },
-    { id: 'rockola', label: 'ROCKOLA', dots: ['#14110c', '#ffd400', '#ff7a1a'] },
-    { id: 'zape', label: 'ZAPE', dots: ['#131313', '#ffd400', '#9a9a9a'] },
+    { id: 'sugar', label: 'SUGAR', dots: ['#ffe3f1', '#ff4fa3', '#8ef0d0'] },
+    { id: 'jukebox', label: 'JUKEBOX', dots: ['#14110c', '#ffd400', '#ff7a1a'] },
+    { id: 'plain', label: 'PLAIN', dots: ['#131313', '#ffd400', '#9a9a9a'] },
   ];
+  // The sticker on the glass. One of these, picked when the editor opens,
+  // because a joke you have already read is not one. They are the internet
+  // this whole look comes from: disclaimers nobody needed, yearbook lines,
+  // and a resolution nobody has run since.
+  (() => {
+    const lines = [
+      'no copyright infringement intended',
+      'best viewed in 800x600',
+      'u rock dont ever change',
+      'made in ms paint',
+      'track 07 - do not sell',
+      'sorry for bad english',
+      'press F to duck',
+      'burned at 4x speed',
+    ];
+    document.getElementById('sticker').textContent =
+      lines[Math.floor(Math.random() * lines.length)];
+  })();
+
   // The flare behind the wordmark: uneven rays, because an even star looks
   // like a loading spinner.
   (() => {
@@ -1566,16 +1587,16 @@ mod tests {
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
         assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")), "skin missing");
 
-        assert!(message("skin rockola").is_none(), "the page already applied it");
+        assert!(message("skin jukebox").is_none(), "the page already applied it");
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains("__seco_skin(\"rockola\")"), "skin missing");
-        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("rockola"));
+        assert!(js.contains("__seco_skin(\"jukebox\")"), "skin missing");
+        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("jukebox"));
 
         // A name the plugin does not ship goes nowhere: it ends up in a
         // stylesheet selector and in a file.
         message("skin ../../etc/passwd");
         message("skin \"><script>");
-        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("rockola"));
+        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("jukebox"));
         *SKIN.lock().unwrap() = None;
     }
 

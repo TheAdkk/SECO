@@ -59,9 +59,8 @@ pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
     // already the one the adapter only pushes when something changed.
     Some(format!(
         "{shapes}window.__seco_custom && window.__seco_custom([{custom}], {attack:.5});\
-         window.__seco_skin && window.__seco_skin(\"{}\", {});",
-        current_skin(),
-        fx3d()
+         window.__seco_skin && window.__seco_skin(\"{}\");",
+        current_skin()
     ))
 }
 
@@ -110,25 +109,6 @@ fn current_skin() -> String {
     cached.clone().unwrap_or_else(|| DEFAULT_SKIN.to_owned())
 }
 
-/// Whether the editor draws its 3D decoration. Remembered like the skin —
-/// a preference, on disk — and defaulting to on: the machinery only runs
-/// while an editor is open, and it never shares a thread with the audio.
-static FX3D: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
-
-fn fx3d() -> bool {
-    let mut cached = FX3D.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if cached.is_none() {
-        *cached = Some(library::read_setting("fx3d").as_deref() != Some("0"));
-    }
-    cached.unwrap_or(true)
-}
-
-fn choose_fx3d(on: bool) -> bool {
-    let mut cached = FX3D.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    *cached = Some(on);
-    library::write_setting("fx3d", if on { "1" } else { "0" })
-}
-
 fn choose_skin(name: &str) -> bool {
     if !SKINS.contains(&name) {
         return false;
@@ -164,13 +144,6 @@ pub(crate) fn message(text: &str) -> Option<String> {
         // project. Nothing is echoed back — the page already applied it.
         "skin" => {
             choose_skin(rest);
-            None
-        }
-        // The 3D decoration costs GPU time on the main thread and nothing
-        // at all on the audio thread, but a machine is a machine: it can be
-        // turned off, and that choice is remembered.
-        "fx3d" => {
-            choose_fx3d(rest == "1");
             None
         }
         _ => None,
@@ -290,11 +263,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* The rays are the accent, not the glow: at glow alpha they were there
      and invisible, which is the worst of both. */
   .burst .rays { fill: var(--accent); }
-  .bolt { width: 15px; height: 25px; margin-left: 7px; }
-  .bolt path {
-    fill: var(--accent); stroke: var(--ink); stroke-width: 2.5;
-    stroke-linejoin: round;
-  }
+
   .brand {
     font: var(--brand-font); letter-spacing: 0.04em;
     color: var(--brand-color); -webkit-text-stroke: var(--brand-stroke);
@@ -339,8 +308,12 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* The 3D decoration replaces the flat one when it is both wanted and
      available; if the context never comes up, the drawing stays. */
   .mascot3d { display: none; flex: none; width: 52px; height: 88px; }
+  /* The bottle is the same object in every skin, so it is shown by the
+     base rules rather than by one of them. `fx3d` is set once the context
+     is up; until then — or if it never comes up — the drawing stands in. */
+  .mascot { display: block; }
   body.fx3d .mascot3d { display: block; }
-  body.fx3d .mascot { display: none !important; }
+  body.fx3d .mascot { display: none; }
   .knoblabel b { color: var(--accent-text); }
   .display {
     flex: 1; background: var(--display-bg); border-radius: var(--radius);
@@ -533,7 +506,6 @@ const HTML: &str = r##"<!DOCTYPE html>
     background: linear-gradient(105deg, #ffffff1c 0 34%, transparent 36%),
                 radial-gradient(120% 60% at 50% -20%, #9fc4ff26, transparent 70%);
   }
-  body[data-skin="tianguis"] .mascot { display: block; }
   body[data-skin="tianguis"] .mascot .cap { fill: #e8b53a; stroke: var(--ink); stroke-width: 3; }
   body[data-skin="tianguis"] .mascot .glass { fill: #7a4a12; stroke: var(--ink); stroke-width: 3; }
   body[data-skin="tianguis"] .mascot .shine { fill: #ffffff44; }
@@ -657,9 +629,6 @@ const HTML: &str = r##"<!DOCTYPE html>
         <g class="rays"></g>
       </svg>
       <div class="brand">ZAPE</div>
-      <svg class="bolt" viewBox="0 0 24 40" aria-hidden="true">
-        <path d="M14 1 L3 22 h7 L8 39 L21 16 h-7 z"/>
-      </svg>
     </div>
     <div class="seg" id="rate"></div>
     <div class="pill" id="curves">CURVES</div>
@@ -760,7 +729,6 @@ const HTML: &str = r##"<!DOCTYPE html>
   // The drawn curve: control points, the entry-fade width to draw it with,
   // and whether the pointer is currently editing it.
   let customPoints = null, customAttack = 0, drawing = false, lastSent = 0;
-  let wants3d = true;
   // Peak input level per bucket, published by the audio thread and drawn
   // behind the curve. Uncoordinated by design — see RtContext::set_scope.
   let scope = null;
@@ -1292,27 +1260,22 @@ const HTML: &str = r##"<!DOCTYPE html>
     requestAnimationFrame(frame3d);
   }
 
-  function set3d(wanted) {
-    const on = wanted && document.body.dataset.skin === 'tianguis';
-    if (on && !gl && !init3d()) {
-      // No context: fall back to the flat drawing rather than a hole.
-      document.body.classList.remove('fx3d');
-      return;
-    }
-    document.body.classList.toggle('fx3d', on && !!gl);
-    if (on && gl && !lastFrame) requestAnimationFrame(frame3d);
-  }
+  // Started once, on load. If the context never comes up — an old machine,
+  // a remote session, a host with an unusual sandbox — the flat drawing is
+  // already on screen and simply stays there.
+  (function start3d() {
+    if (!init3d()) return;
+    document.body.classList.add('fx3d');
+    requestAnimationFrame(frame3d);
+  })();
 
   // ---- skins ------------------------------------------------------------
   // The plugin remembers the choice on disk (a preference, not session
   // state) and pushes it back with the shapes; the page only has to apply
   // it and repaint, because every colour lives in CSS.
-  window.__seco_skin = (id, fx3d) => {
-    wants3d = fx3d;
-    set3d(wants3d);
+  window.__seco_skin = (id) => {
     if (document.body.dataset.skin === id) return;
     document.body.dataset.skin = id;
-    set3d(wants3d);
     buildSkinList();
     // Tiles are painted, not styled: their canvases hold the old skin's
     // colours until something repaints them, and the parameter push that
@@ -1347,24 +1310,6 @@ const HTML: &str = r##"<!DOCTYPE html>
       panel.appendChild(row);
     });
 
-    const toggle = document.createElement('div');
-    toggle.className = 'skinrow' + (document.body.classList.contains('fx3d') ? ' on' : '');
-    const mark = document.createElement('div');
-    mark.className = 'swatch';
-    const dot = document.createElement('i');
-    dot.style.background = document.body.classList.contains('fx3d') ? '#ffcf3f' : '#555';
-    mark.appendChild(dot);
-    const label = document.createElement('span');
-    label.textContent = '3D';
-    toggle.appendChild(mark);
-    toggle.appendChild(label);
-    toggle.addEventListener('click', () => {
-      wants3d = !wants3d;
-      set3d(wants3d);
-      post('msg fx3d ' + (wants3d ? 1 : 0));
-      buildSkinList();
-    });
-    panel.appendChild(toggle);
   }
 
   document.getElementById('skin-button').addEventListener('click', () => {
@@ -1618,11 +1563,11 @@ mod tests {
         *SKIN.lock().unwrap() = None;
 
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\", ")), "skin missing");
+        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")), "skin missing");
 
         assert!(message("skin rockola").is_none(), "the page already applied it");
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains("__seco_skin(\"rockola\", "), "skin missing");
+        assert!(js.contains("__seco_skin(\"rockola\")"), "skin missing");
         assert_eq!(crate::library::read_setting("skin").as_deref(), Some("rockola"));
 
         // A name the plugin does not ship goes nowhere: it ends up in a

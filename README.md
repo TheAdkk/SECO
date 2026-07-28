@@ -248,10 +248,11 @@ relaxed atomic stores in one direction. There is nothing to contend for, no
 lock to wait on and no allocation on the path. The audio callback does not
 know the renderer exists.
 
-It can still be turned off — a machine is a machine — and that choice is
-remembered like the skin. If the WebGL context fails to come up (an old
-machine, a remote session, a host with an unusual sandbox) the flat drawing
-stays rather than leaving a hole.
+There is no switch for it. The bottle is the same object in every skin, so
+it is shown by the base rules rather than by one of them, and the only
+thing that turns it off is the machine saying no: if the WebGL context
+fails to come up (an old machine, a remote session, a host with an unusual
+sandbox) the flat drawing is already on screen and simply stays there.
 
 On model files: `.obj` is a text format and its parser is short, `.glb` is
 the right long-term answer, and `.blend` is Blender's internal memory dump —

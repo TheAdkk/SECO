@@ -36,7 +36,9 @@ and version are written.
 ## Zape
 
 Tempo-synced ducking ("ghost kick"): `gain = curve(phase)` where `phase` is
-the host's beat position folded into a cycle. Four parameters: **Rate**
+the host's beat position folded into a cycle. The editor draws the incoming
+audio behind the curve, bucketed by phase, so the picture is triggered on
+the beat rather than scrolling past. Four parameters: **Rate**
 (1/1 … 1/16), **Mix**, **Curve** (15 shapes: single dips of varying
 recovery, gated holds, and 2/3/4-per-cycle patterns), **Bypass**. Fifteen shapes ship and the sixteenth is drawn in the editor.
 Every shape puts its floor exactly on the beat and closes the cycle seam at the
@@ -154,6 +156,35 @@ default curve: a session that cannot be understood must still play.
 The page samples the drawn curve with the plugin's own interpolation *and*
 its dip-entry fade, so the line under the handles is the gain the audio
 gets, not an illustration of it.
+
+### The picture of the audio (a deliberately weak channel)
+
+The editor draws the incoming signal behind the curve, which means the
+audio thread has to tell the main thread something 30 times a second. The
+state block's triple buffer would work and is the wrong tool: it guarantees
+that a reader sees one coherent snapshot, and a waveform does not need
+that.
+
+`RtContext::set_scope` is therefore a plain relaxed store into a fixed
+array of atomics — nothing blocks, nothing allocates, nothing is
+coordinated. A reader can see bucket 3 from this block next to bucket 4
+from the previous one, and for a picture that is invisible. The doc comment
+says so out loud, because the same shortcut applied to state a decision
+depends on would be a bug rather than a trade.
+
+Zape buckets peaks by *phase*, so the display is beat-aligned rather than
+scrolling — a scope triggered on the beat, drawn on the same axis as the
+curve above it. Two details that were wrong first: the release has to fire
+once per pass rather than once per sample (per sample, a bucket ends up
+holding the last few samples instead of the loudest of the pass — a thin
+wobble where the envelope should be), and reconstructing the block's start
+phase by subtracting leaves a negative epsilon that `rem_euclid` wraps to
+~0.99999, lighting the last bucket on every block. Both are pinned by test.
+
+The push is split accordingly: `editor_script` is deduplicated for things
+that change rarely (the shapes, the drawn curve), `editor_frame` is
+evaluated every refresh for the scope, because comparing a snippet that
+always differs would cost more than sending it.
 
 ### The unsafe audit (two real UB holes)
 

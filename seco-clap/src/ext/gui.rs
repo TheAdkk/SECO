@@ -447,6 +447,7 @@ unsafe extern "C" fn show<P: Plugin>(plugin: *const ClapPlugin) -> bool {
     let inst = unsafe { instance::shared::<P>(plugin) };
     push_params::<P>(handle, inst);
     push_script::<P>(handle, inst);
+    push_frame::<P>(handle, inst);
     true
 }
 
@@ -486,6 +487,7 @@ unsafe extern "C" fn on_timer<P: Plugin>(plugin: *const ClapPlugin, timer_id: Cl
     let inst = unsafe { instance::shared::<P>(plugin) };
     push_params::<P>(handle, inst);
     push_script::<P>(handle, inst);
+    push_frame::<P>(handle, inst);
 }
 
 /// Reads the SAME atomics the host's get_value reads (`param_bits` — one
@@ -576,5 +578,25 @@ fn push_script<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
     // thread.
     if !unsafe { handle.webview.isLoading() } {
         *last = Some(script);
+    }
+}
+
+/// Pushes the plugin's per-refresh snippet — the picture of the audio.
+///
+/// Deliberately *not* deduplicated: scope buckets change every block, so
+/// comparing would cost more than sending (`Plugin::editor_frame`).
+fn push_frame<P: Plugin>(handle: &GuiHandle, inst: &Instance<P>) {
+    let mut buckets = [0.0_f32; crate::SCOPE_BUCKETS];
+    for (slot, published) in buckets.iter_mut().zip(&inst.scope) {
+        *slot = f32::from_bits(published.load(Relaxed));
+    }
+    let Some(frame) = P::editor_frame(&buckets) else {
+        return;
+    };
+    // SAFETY (objc2 contract): main thread; completion handler omitted.
+    unsafe {
+        handle
+            .webview
+            .evaluateJavaScript_completionHandler(&NSString::from_str(&frame), None);
     }
 }

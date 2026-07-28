@@ -58,6 +58,25 @@ pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
     ))
 }
 
+/// The scope buckets, as a `window.__seco_scope([...])` call.
+///
+/// Sent every refresh without a change comparison — the point of it is that
+/// it changes. Two decimals is more resolution than a waveform a few
+/// hundred pixels wide can show, and keeps the push under a kilobyte.
+pub(crate) fn frame(scope: &[f32]) -> Option<String> {
+    if scope.is_empty() {
+        return None;
+    }
+    let mut points = String::with_capacity(scope.len() * 5);
+    for (index, value) in scope.iter().enumerate() {
+        if index > 0 {
+            points.push(',');
+        }
+        points.push_str(&format!("{value:.2}"));
+    }
+    Some(format!("window.__seco_scope && window.__seco_scope([{points}]);"))
+}
+
 /// Tempo assumed when drawing. The plugin uses the host's.
 const REFERENCE_BPM: f64 = 120.0;
 
@@ -194,6 +213,9 @@ const HTML: &str = r##"<!DOCTYPE html>
   // The drawn curve: control points, the entry-fade width to draw it with,
   // and whether the pointer is currently editing it.
   let customPoints = null, customAttack = 0, drawing = false, lastSent = 0;
+  // Peak input level per bucket, published by the audio thread and drawn
+  // behind the curve. Uncoordinated by design — see RtContext::set_scope.
+  let scope = null;
   // Repainting sixteen tile canvases at the refresh rate is pointless; they
   // only change when the selection or the drawn curve does.
   let paintedSelection = -1;
@@ -213,6 +235,12 @@ const HTML: &str = r##"<!DOCTYPE html>
     if (drawing) return;
     customPoints = points;
     paintedSelection = -1;
+    draw();
+  };
+
+  // Pushed every refresh: the picture of the audio going through.
+  window.__seco_scope = (buckets) => {
+    scope = buckets;
     draw();
   };
 
@@ -345,6 +373,8 @@ const HTML: &str = r##"<!DOCTYPE html>
     if (!params) return;
     // Unity and silence, so the depth of the duck is readable.
     guides(ctx);
+    // The audio first, so the curve is drawn over what it acts on.
+    if (scope) waveform(ctx);
     const points = shapeAt(Math.min(step(params[CURVE]), CURVE_CUSTOM));
     if (!points) return;
     // Dry shape behind, mixed shape in front: the front line is literally
@@ -368,6 +398,27 @@ const HTML: &str = r##"<!DOCTYPE html>
       ctx.fill();
       ctx.stroke();
     }
+  }
+
+  // The input level, mirrored around the middle so it reads as a waveform
+  // rather than a bar chart. Beat-aligned: bucket i is phase i / count, the
+  // same axis as the curve above it.
+  function waveform(ctx) {
+    const middle = ctx.canvas.height / 2;
+    const scale = ctx.canvas.height * 0.46;
+    ctx.beginPath();
+    ctx.moveTo(0, middle);
+    for (let i = 0; i < scope.length; i++) {
+      const x = (i / (scope.length - 1)) * ctx.canvas.width;
+      ctx.lineTo(x, middle - scope[i] * scale);
+    }
+    for (let i = scope.length - 1; i >= 0; i--) {
+      const x = (i / (scope.length - 1)) * ctx.canvas.width;
+      ctx.lineTo(x, middle + scope[i] * scale);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(200, 200, 200, 0.16)';
+    ctx.fill();
   }
 
   function guides(ctx) {
@@ -574,6 +625,17 @@ mod tests {
              window.__seco_update({list});\n\
              </script>",
             script(&[2.0, 100.0, crate::CUSTOM_CURVE as f64, 0.0], b"").expect("shapes"),
+        );
+        // A plausible envelope, so the preview shows the audio picture the
+        // way a host would drive it.
+        let mut scope = [0.0_f32; seco_clap::SCOPE_BUCKETS];
+        for (index, bucket) in scope.iter_mut().enumerate() {
+            let phase = index as f32 / seco_clap::SCOPE_BUCKETS as f32;
+            *bucket = (0.35 + 0.5 * (phase * 24.0).sin().abs()) * (1.0 - phase * 0.35);
+        }
+        let harness = format!(
+            "{harness}<script>{}</script>",
+            frame(&scope).expect("frame")
         );
         let page = HTML.replace("</body>", &format!("{harness}</body>"));
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/zape-editor.html");

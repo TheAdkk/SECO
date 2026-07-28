@@ -35,6 +35,13 @@ impl<'a> AudioBuffer<'a> {
         self.channels.len()
     }
 
+    /// Iterates over the channels as read-only sample slices — for a plugin
+    /// that needs to look at the block before changing it (metering, a
+    /// picture of the input for its editor).
+    pub fn channels(&self) -> impl Iterator<Item = &[f32]> {
+        self.channels.iter().map(|channel| &**channel)
+    }
+
     /// Iterates over the channels as mutable sample slices.
     pub fn channels_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
         self.channels.iter_mut().map(|ch| &mut **ch)

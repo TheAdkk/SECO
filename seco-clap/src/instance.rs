@@ -20,12 +20,12 @@ use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::slice;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 use seco_core::__private::with_rt_context;
 use seco_core::{AudioBuffer, Plugin, Transport};
 
-use crate::MAX_PARAMS;
+use crate::{MAX_PARAMS, SCOPE_BUCKETS};
 use crate::ext::audio_ports;
 use crate::ext::params::ParamsImpl;
 use crate::ext::state::StateImpl;
@@ -61,6 +61,9 @@ pub(crate) struct Instance<P: Plugin> {
     /// See the module docs: `&mut P` is only materialized inside callbacks
     /// whose exclusivity CLAP guarantees.
     state: UnsafeCell<P>,
+    /// Visualization buckets, written by the audio thread and read by the
+    /// editor. Relaxed atomics on purpose: see `RtContext::set_scope`.
+    pub(crate) scope: [AtomicU32; SCOPE_BUCKETS],
     /// The plugin's own state block and its hand-off to the audio thread.
     /// Adapter-owned for the same reason as `param_bits`: `clap.state` runs
     /// on the main thread while `process()` may be running. See
@@ -161,6 +164,7 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
             on_main_thread: plugin_on_main_thread,
         },
         state: UnsafeCell::new(P::new()),
+        scope: std::array::from_fn(|_| AtomicU32::new(0)),
         plugin_state: crate::plugin_state::PluginStateSlot::new(),
         param_bits: std::array::from_fn(|index| {
             let default =
@@ -786,7 +790,7 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
     // instance (thread-check.h:30-40); main-thread param callbacks touch only
     // atomics, never `state`. Exclusive.
     let state = unsafe { &mut *inst.state.get() };
-    with_rt_context(transport, &params_snapshot[..P::PARAMS.len()], |rt| {
+    with_rt_context(transport, &params_snapshot[..P::PARAMS.len()], &inst.scope, |rt| {
         // A state block published since the last block lands here, on the
         // audio thread, before the plugin processes with it — see
         // `plugin_state` for why the main thread cannot deliver it itself.

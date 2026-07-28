@@ -50,6 +50,25 @@ pub trait Plugin: Send + 'static {
         None
     }
 
+    /// Per-refresh data for the editor, as JavaScript to evaluate.
+    ///
+    /// Unlike [`Plugin::editor_script`] this is evaluated *every* refresh
+    /// without a change comparison, because that is what a picture of the
+    /// audio needs: the scope buckets the plugin published from
+    /// [`RtContext::set_scope`] change constantly, and comparing a
+    /// thousand-character snippet to decide would cost more than sending
+    /// it.
+    ///
+    /// Keep it small for the same reason. Anything that changes rarely
+    /// belongs in `editor_script`, which is deduplicated.
+    ///
+    /// Main thread. `scope` holds the latest published buckets — see
+    /// [`RtContext::set_scope`] for how little they are coordinated.
+    fn editor_frame(scope: &[f32]) -> Option<String> {
+        let _ = scope;
+        None
+    }
+
     /// Applies a block of plugin-owned state — anything that does not fit
     /// in a parameter, such as a drawn curve.
     ///

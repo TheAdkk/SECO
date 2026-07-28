@@ -51,6 +51,11 @@ const RATE_BEATS: [f64; 5] = [4.0, 2.0, 1.0, 0.5, 0.25];
 /// rate, bypass) and preset changes. A full-scale jump takes about 3.2 ms.
 const MAX_GAIN_RATE: f32 = (std::f64::consts::PI / 2.0 / ATTACK_SECONDS) as f32;
 
+/// How fast a scope bucket forgets a loud sample, per cycle. The envelope
+/// is drawn against the beat, so each bucket is revisited once per cycle;
+/// this is what stops a single transient from parking there forever.
+const SCOPE_RELEASE: f32 = 0.6;
+
 /// Free-run tempo when the host provides none.
 const FALLBACK_BPM: f64 = 120.0;
 
@@ -81,6 +86,14 @@ struct Zape {
     /// state block arrives, never per block.
     custom: CustomCurve,
     custom_shape: DuckShape,
+    /// Peak input level per scope bucket, indexed by phase — a picture of
+    /// the audio drawn against the beat, like a scope triggered on it. The
+    /// plugin owns this; `RtContext::set_scope` publishes a copy the editor
+    /// can read.
+    envelope: [f32; seco_clap::SCOPE_BUCKETS],
+    /// The bucket the phase was in last, so the release above fires once per
+    /// pass rather than once per sample.
+    last_bucket: usize,
     /// Per-block gain, computed once and applied to every channel.
     /// Allocated in `activate` (where `max_frames` is known); `process`
     /// never allocates.
@@ -129,6 +142,10 @@ impl Plugin for Zape {
         editor::script(params, state)
     }
 
+    fn editor_frame(scope: &[f32]) -> Option<String> {
+        editor::frame(scope)
+    }
+
     fn new() -> Self {
         Zape {
             sample_rate: 48_000.0,
@@ -138,6 +155,8 @@ impl Plugin for Zape {
             curves: duck::tables(),
             custom: CustomCurve::default(),
             custom_shape: CustomCurve::default().shape(),
+            envelope: [0.0; seco_clap::SCOPE_BUCKETS],
+            last_bucket: usize::MAX,
             gain: Vec::new(),
         }
     }
@@ -217,6 +236,12 @@ impl Plugin for Zape {
             self.needs_snap = false;
         }
 
+        // Remembered before the gain loop advances it. Reconstructing this
+        // afterwards by subtraction leaves a negative epsilon that
+        // rem_euclid wraps to ~0.99999, lighting the last scope bucket on
+        // every block.
+        let block_start_phase = self.phase;
+
         for slot in &mut self.gain[..n] {
             let target = if bypass {
                 // Bypass stays inside process() (CLAP requires the host to
@@ -231,6 +256,35 @@ impl Plugin for Zape {
         // If the host overran its activate() promise, the tail passes
         // through un-ducked; keep the phase advancing consistently anyway.
         self.phase = (self.phase + inc * (frames - n) as f64).rem_euclid(1.0);
+
+        // The picture is of what arrives, before the duck: the curve drawn
+        // over it is exactly what is about to be done to it. Peaks are
+        // bucketed by phase, so the display is beat-aligned rather than
+        // scrolling — a scope triggered on the beat.
+        let buckets = rt.scope_len().min(self.envelope.len());
+        if buckets > 0 {
+            for index in 0..n {
+                let phase = (block_start_phase + inc * index as f64).rem_euclid(1.0);
+                let bucket = ((phase * buckets as f64) as usize).min(buckets - 1);
+                // Release is applied once per *pass*, when the phase first
+                // reaches a bucket — not per sample. Decaying per sample
+                // would leave each bucket holding the last few samples
+                // instead of the loudest of the pass, and the picture would
+                // be a thin wobble rather than an envelope.
+                if bucket != self.last_bucket {
+                    self.envelope[bucket] *= SCOPE_RELEASE;
+                    self.last_bucket = bucket;
+                }
+                let mut peak = 0.0_f32;
+                for channel in audio.channels() {
+                    peak = peak.max(channel[index].abs());
+                }
+                self.envelope[bucket] = self.envelope[bucket].max(peak);
+            }
+            for bucket in 0..buckets {
+                rt.set_scope(bucket, self.envelope[bucket].min(1.0));
+            }
+        }
 
         for channel in audio.channels_mut() {
             for (sample, gain) in channel.iter_mut().zip(&self.gain[..n]) {
@@ -282,7 +336,7 @@ mod tests {
     fn run_block_with(plugin: &mut Zape, params: &[f64; 4], ppq: f64, frames: usize) -> Vec<f32> {
         let mut left = vec![1.0_f32; frames];
         let mut right = vec![1.0_f32; frames];
-        with_rt_context(transport_at(ppq), params, |rt| {
+        with_rt_context(transport_at(ppq), params, &[], |rt| {
             let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
             let mut audio = AudioBuffer::new(&mut channels);
             plugin.process(&mut audio, rt);
@@ -467,7 +521,7 @@ mod tests {
                 time_signature: None,
                 playing: true,
             };
-            with_rt_context(transport, &params, |rt| {
+            with_rt_context(transport, &params, &[], |rt| {
                 let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
                 let mut audio = AudioBuffer::new(&mut channels);
                 plugin.process(&mut audio, rt);
@@ -529,7 +583,7 @@ mod tests {
         // Flat at full gain after the beat: the only ducking left is the
         // dip entry itself, which is what makes the assertions sharp.
         let block = b"0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1";
-        with_rt_context(transport_at(0.0), &PARAMS_SOFT, |rt| {
+        with_rt_context(transport_at(0.0), &PARAMS_SOFT, &[], |rt| {
             plugin.apply_state(block, rt);
         });
 
@@ -555,11 +609,75 @@ mod tests {
         plugin.activate(48_000.0, 512);
         // Built out here; inside the runner the detector is armed.
         let block = custom::CustomCurve::default().to_wire();
-        with_rt_context(transport_at(0.0), &PARAMS_SOFT, |rt| {
+        with_rt_context(transport_at(0.0), &PARAMS_SOFT, &[], |rt| {
             plugin.apply_state(block.as_bytes(), rt);
             plugin.apply_state(b"junk", rt);
             plugin.apply_state(b"", rt);
         });
+    }
+
+    /// The scope is the picture of the input, aligned to the beat: bucket i
+    /// is phase i / count, the same axis the curve is drawn on. It also has
+    /// to be free: it runs inside the real-time scope, where the allocation
+    /// detector is armed.
+    #[test]
+    fn the_scope_pictures_the_input_against_the_beat() {
+        use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+        const BUCKETS: usize = seco_clap::SCOPE_BUCKETS;
+        let scope: [AtomicU32; BUCKETS] = std::array::from_fn(|_| AtomicU32::new(0));
+        let mut plugin = Zape::new();
+        plugin.activate(48_000.0, 4096);
+
+        // A block covering the first eighth of the cycle: rate 1/4 at 120
+        // BPM is 24 000 samples, so 3 000 of them.
+        let frames = 3_000;
+        let mut left = vec![0.5_f32; frames];
+        let mut right = vec![0.5_f32; frames];
+        with_rt_context(transport_at(8.0), &[2.0, 100.0, 0.0, 0.0], &scope, |rt| {
+            let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+            let mut audio = AudioBuffer::new(&mut channels);
+            plugin.process(&mut audio, rt);
+        });
+
+        let read = |bucket: usize| f32::from_bits(scope[bucket].load(Relaxed));
+        // The block covered the first eighth of the cycle and nothing else.
+        let hot: Vec<usize> = (0..BUCKETS).filter(|bucket| read(*bucket) > 0.0).collect();
+        assert_eq!(hot, (0..BUCKETS / 8).collect::<Vec<_>>(), "wrong buckets lit");
+        // The input was 0.5, before the duck: the picture is of what
+        // arrives, so the curve drawn over it means something.
+        assert!((read(0) - 0.5).abs() < 1e-3, "bucket 0 shows {}", read(0));
+        assert!((read(BUCKETS / 8 - 1) - 0.5).abs() < 1e-3);
+        // Nothing was played in the rest of the cycle yet.
+        assert_eq!(read(BUCKETS / 2), 0.0);
+        assert_eq!(read(BUCKETS - 1), 0.0);
+    }
+
+    /// A bucket holds the loudest sample of the pass, not the last few. The
+    /// release fires once per pass; per sample it would leave a thin wobble
+    /// where the envelope should be.
+    #[test]
+    fn a_scope_bucket_holds_the_peak_of_the_pass() {
+        use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+        let scope: [AtomicU32; seco_clap::SCOPE_BUCKETS] =
+            std::array::from_fn(|_| AtomicU32::new(0));
+        let mut plugin = Zape::new();
+        plugin.activate(48_000.0, 4096);
+
+        // One bucket's worth of samples: loud at the start, silent after.
+        let frames = 187;
+        let mut left = vec![0.0_f32; frames];
+        left[0] = 0.9;
+        let mut right = vec![0.0_f32; frames];
+        with_rt_context(transport_at(8.0), &[2.0, 100.0, 0.0, 0.0], &scope, |rt| {
+            let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+            let mut audio = AudioBuffer::new(&mut channels);
+            plugin.process(&mut audio, rt);
+        });
+
+        let peak = f32::from_bits(scope[0].load(Relaxed));
+        assert!((peak - 0.9).abs() < 1e-3, "bucket 0 kept {peak}, not the peak of the pass");
     }
 
     /// The complaint that started this: the duck has to be *on* the beat.

@@ -28,6 +28,14 @@ pub use plugin_state::MAX_PLUGIN_STATE;
 /// plugins declaring more at compile time.
 pub const MAX_PARAMS: usize = 32;
 
+/// How many visualization buckets a plugin can publish
+/// ([`RtContext::set_scope`](seco_core::RtContext::set_scope)).
+///
+/// 128 across an editor a few hundred pixels wide is a couple of pixels per
+/// bucket — past what the eye resolves in a waveform, and small enough that
+/// pushing the lot into the page every refresh stays cheap.
+pub const SCOPE_BUCKETS: usize = 128;
+
 /// Not public API — re-exports for `seco_export!` expansions only.
 #[doc(hidden)]
 pub mod __reexport {

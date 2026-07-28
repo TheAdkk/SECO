@@ -210,10 +210,23 @@ sent back — it ends up in a stylesheet selector and in a filename, and it
 arrives from a webview.
 
 They are palettes and attitude, taken from things worth ripping off: a
-burned-DVD cover from a Mexico State tianguis (gold on navy, chrome bevels,
-sparkles — the default), a bruised-purple cartoon farmhouse, candy pinks
-over hard black ink, and a diner in yellow and orange. No marks, no badges,
-no characters, no team crests; the names are ours.
+burned-DVD cover from a Mexico State tianguis, a bruised-purple cartoon
+farmhouse, candy pinks over hard black ink, and a diner in yellow and
+orange. No marks, no badges, no characters, no team crests; the names are
+ours.
+
+The default one goes further and rebuilds the grammar of a 2008 fan page:
+a bevelled plaque behind the header, a gloss highlight over the top half of
+every control, an inset screen with a diagonal reflection, chrome lettering,
+and a hand-drawn caguama in inline SVG. Decoration is markup a skin shows or
+hides, so it costs the other four nothing and the binary is still the whole
+plugin — no image files, no fetches.
+
+Two things that only work if you know why: the reflection over the display
+is `pointer-events: none`, or it would eat the drag that draws the curve;
+and the wordmark's shadow is a `filter`, not a `text-shadow`, because the
+letters are a clipped gradient and a text-shadow paints straight through
+them.
 
 ### The picture of the audio (a deliberately weak channel)
 

@@ -266,6 +266,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   #knob .body { fill: var(--knob-body); stroke: var(--ink); stroke-width: var(--outline); }
   #knob .dot { fill: var(--accent); stroke: var(--ink); stroke-width: 2; }
   .knoblabel { font-weight: 800; letter-spacing: 0.1em; font-size: 12px; }
+  .mascot { display: none; width: 76px; height: 128px; }
   .knoblabel b { color: var(--accent-text); }
   .display {
     flex: 1; background: var(--display-bg); border-radius: var(--radius);
@@ -380,7 +381,7 @@ const HTML: &str = r##"<!DOCTYPE html>
     --knob-shadow: drop-shadow(3px 4px 0 #041030);
     --brand-font: 900 italic 32px/1 "Avenir Next", sans-serif;
     --brand-color: #ffd964; --brand-stroke: 4px #041030; --brand-tilt: rotate(-4deg) skewX(-6deg);
-    --brand-fill: linear-gradient(#ffffff, #ffd964 45%, #b47a00 55%, #ffe9a8);
+    --brand-fill: linear-gradient(#ffffff 0%, #fff2b0 38%, #e5a800 52%, #ffffff 100%);
     --brand-clip: text; --brand-fill-color: transparent;
     --bg-image:
       radial-gradient(circle at 12% 18%, #ffffff22 0 2px, transparent 3px),
@@ -394,10 +395,59 @@ const HTML: &str = r##"<!DOCTYPE html>
     --wave-dry: rgba(190, 214, 255, 0.16); --wave-wet: rgba(226, 238, 255, 0.5);
     --tile-line: #cddcff; --tile-line-on: #2a1c00;
   }
+  /* Everything below is the 2008 part: a gloss highlight on the top half
+     of every control, a bevel under it, and a plaque behind the header —
+     the grammar of a fan page from when tables had borders. */
   body[data-skin="tianguis"] .pill,
   body[data-skin="tianguis"] .tile,
-  body[data-skin="tianguis"] .card {
-    background-image: linear-gradient(#ffffff30, #ffffff00 45%);
+  body[data-skin="tianguis"] .card,
+  body[data-skin="tianguis"] .saverow input {
+    background-image: linear-gradient(#ffffff55, #ffffff10 46%, #00000022 54%, #00000033);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow),
+                inset 0 1px 0 #ffffff70, inset 0 -2px 4px #00000055;
+  }
+  body[data-skin="tianguis"] .pill.on,
+  body[data-skin="tianguis"] .tile.on {
+    background-image: linear-gradient(#fff6c8, #ffcf3f 46%, #e0a800 54%, #ffe08a);
+  }
+  body[data-skin="tianguis"] .bar {
+    background: linear-gradient(#4d7fd6, #16306e 48%, #0d2154 52%, #2a4f9e);
+    border: 3px solid var(--ink); border-radius: 999px;
+    padding: 6px 10px; box-shadow: 3px 3px 0 var(--ink), inset 0 1px 0 #ffffff66;
+  }
+  body[data-skin="tianguis"] .brand {
+    /* The shadow has to be a filter, not text-shadow: the letters are a
+       clipped gradient, so a text-shadow paints *through* them. */
+    filter: drop-shadow(0 3px 0 #00112f) drop-shadow(0 0 7px #7fb0ff66);
+  }
+  body[data-skin="tianguis"] .display {
+    position: relative; overflow: hidden;
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow),
+                inset 0 2px 10px #000000cc, 0 0 0 2px #4d7fd6 inset;
+  }
+  /* The glass reflection over the screen. Never in the way of the pointer:
+     the curve underneath is draggable. */
+  body[data-skin="tianguis"] .display::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(105deg, #ffffff1c 0 34%, transparent 36%),
+                radial-gradient(120% 60% at 50% -20%, #9fc4ff26, transparent 70%);
+  }
+  body[data-skin="tianguis"] .mascot { display: block; }
+  body[data-skin="tianguis"] .mascot .cap { fill: #e8b53a; stroke: var(--ink); stroke-width: 3; }
+  body[data-skin="tianguis"] .mascot .glass { fill: #7a4a12; stroke: var(--ink); stroke-width: 3; }
+  body[data-skin="tianguis"] .mascot .shine { fill: #ffffff44; }
+  body[data-skin="tianguis"] .mascot .label {
+    fill: #f6efdc; stroke: var(--ink); stroke-width: 3;
+  }
+  body[data-skin="tianguis"] .mascot .labeltext {
+    fill: #0a1f4d; font: 900 italic 9px "Avenir Next", sans-serif;
+    letter-spacing: 0.04em;
+  }
+  body[data-skin="tianguis"] .mascot .sparkles { fill: #ffe9a8; }
+  body[data-skin="tianguis"] .skinrow.on,
+  body[data-skin="tianguis"] .browser,
+  body[data-skin="tianguis"] .skins {
+    background-image: linear-gradient(#ffffff18, #00000022);
   }
 
   /* Miedo: sickly farmhouse palette — bruised purple, sour teal, dusty
@@ -520,6 +570,21 @@ const HTML: &str = r##"<!DOCTYPE html>
         <circle class="dot" id="dot" cx="66" cy="34" r="5"/>
       </svg>
       <div class="knoblabel">MIX <b id="mixvalue">--</b></div>
+      <!-- Decoration, drawn inline so the binary stays the whole plugin.
+           Only one skin shows it; the others collapse it to nothing. -->
+      <svg class="mascot" viewBox="0 0 62 104" aria-hidden="true">
+        <g class="sparkles">
+          <path d="M6 18 L8 24 L14 26 L8 28 L6 34 L4 28 L-2 26 L4 24 Z"/>
+          <path d="M54 8 L56 13 L61 15 L56 17 L54 22 L52 17 L47 15 L52 13 Z"/>
+          <path d="M56 74 L57.5 78 L61.5 79.5 L57.5 81 L56 85 L54.5 81 L50.5 79.5 L54.5 78 Z"/>
+        </g>
+        <rect class="cap" x="23" y="2" width="16" height="9" rx="2"/>
+        <path class="glass" d="M26 11 h10 v14 q14 6 14 20 v49 q0 8 -8 8 h-22 q-8 0 -8 -8 v-49
+                               q0 -14 14 -20 z"/>
+        <path class="shine" d="M24 28 q-6 5 -6 17 v44 q0 4 3 4 q3 0 3 -4 v-44 q0 -12 6 -17 z"/>
+        <rect class="label" x="14" y="58" width="34" height="26" rx="3"/>
+        <text class="labeltext" x="31" y="75" text-anchor="middle">ZAPE</text>
+      </svg>
     </div>
     <div class="display"><canvas id="curve"></canvas></div>
   </div>

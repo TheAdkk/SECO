@@ -54,8 +54,13 @@ pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
     // fade width the shipped shapes were sampled with.
     let attack = (crate::ATTACK_SECONDS
         / (crate::RATE_BEATS[rate] * 60.0 / REFERENCE_BPM)) as f32;
+    // The skin rides along too: it is a preference read from disk, so the
+    // page cannot know it until the plugin says so, and this snippet is
+    // already the one the adapter only pushes when something changed.
     Some(format!(
-        "{shapes}window.__seco_custom && window.__seco_custom([{custom}], {attack:.5});"
+        "{shapes}window.__seco_custom && window.__seco_custom([{custom}], {attack:.5});\
+         window.__seco_skin && window.__seco_skin(\"{}\");",
+        current_skin()
     ))
 }
 
@@ -78,6 +83,41 @@ pub(crate) fn frame(scope: &[f32]) -> Option<String> {
     Some(format!("window.__seco_scope && window.__seco_scope([{points}]);"))
 }
 
+/// The skins the page ships, and the one used when nothing is remembered.
+///
+/// Checked here rather than trusted from the page: the value is written to
+/// disk and pushed back into a stylesheet selector, so it stays a closed
+/// set of identifiers we chose.
+const SKINS: [&str; 5] = ["tianguis", "miedo", "azucar", "rockola", "zape"];
+
+/// Loud, gold-on-navy, and the reason this plugin has skins at all.
+const DEFAULT_SKIN: &str = "tianguis";
+
+/// The chosen skin, read from disk once and kept here after.
+///
+/// The editor asks for it at its refresh rate; going to the filesystem
+/// thirty times a second to answer would be silly. Main thread only, so the
+/// lock is never contended by anything that matters.
+static SKIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn current_skin() -> String {
+    let mut cached = SKIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cached.is_none() {
+        let stored = library::read_skin().filter(|name| SKINS.contains(&name.as_str()));
+        *cached = Some(stored.unwrap_or_else(|| DEFAULT_SKIN.to_owned()));
+    }
+    cached.clone().unwrap_or_else(|| DEFAULT_SKIN.to_owned())
+}
+
+fn choose_skin(name: &str) -> bool {
+    if !SKINS.contains(&name) {
+        return false;
+    }
+    let mut cached = SKIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cached = Some(name.to_owned());
+    library::write_skin(name)
+}
+
 /// Answers a request from the page: the curve library on disk.
 ///
 /// Requests are `list`, `save <name>|<points>` and `delete <name>`. There is
@@ -98,6 +138,13 @@ pub(crate) fn message(text: &str) -> Option<String> {
         "delete" => {
             library::delete(rest);
             Some(presets_js())
+        }
+        // A skin is a preference, so it is remembered next to the library
+        // rather than in the session: it follows the person, not the
+        // project. Nothing is echoed back — the page already applied it.
+        "skin" => {
+            choose_skin(rest);
+            None
         }
         _ => None,
     }
@@ -164,85 +211,115 @@ const HTML: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <style>
+  /* ------------------------------------------------------------------ *
+   * Structure first, skins second. Every colour a skin can change is a
+   * variable here — including the ones the canvas drawing reads back
+   * through getComputedStyle, so a skin never has to touch JavaScript.
+   * ------------------------------------------------------------------ */
   :root {
-    --bg: #131313;
-    --panel: #1e1e1e;
-    --panel-hi: #2a2a2a;
-    --accent: #ffd400;
-    --text: #9a9a9a;
+    --outline: 3px;
+    --radius: 12px;
+    --shadow-x: 3px;
+    --shadow-y: 3px;
   }
   html, body {
     margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 500 13px/1.2 -apple-system, sans-serif;
+    font: var(--font);
     user-select: none; -webkit-user-select: none;
     -webkit-font-smoothing: antialiased;
   }
   body {
     display: flex; flex-direction: column; padding: 16px;
     box-sizing: border-box; gap: 12px; position: relative;
+    background-image: var(--bg-image); background-size: var(--bg-size);
   }
-  .bar { display: flex; align-items: center; gap: 8px; }
+  .bar { display: flex; align-items: center; gap: 7px; }
   .brand {
-    font: 800 22px/1 -apple-system, sans-serif; letter-spacing: 0.14em;
-    color: var(--accent); margin-right: auto;
+    font: var(--brand-font); letter-spacing: 0.04em; margin-right: auto;
+    color: var(--brand-color); -webkit-text-stroke: var(--brand-stroke);
+    paint-order: stroke fill; transform: var(--brand-tilt);
+    background: var(--brand-fill); -webkit-background-clip: var(--brand-clip);
+    -webkit-text-fill-color: var(--brand-fill-color);
   }
-  .seg { display: flex; gap: 4px; }
+  .seg { display: flex; gap: 5px; }
   .pill {
-    padding: 6px 12px; border-radius: 14px; background: var(--panel);
-    color: var(--text); cursor: pointer; font-weight: 700; letter-spacing: 0.04em;
-    transition: background 90ms, color 90ms;
+    padding: 7px 12px; border-radius: 999px; background: var(--panel);
+    color: var(--text); cursor: pointer; font-weight: 800;
+    letter-spacing: 0.03em; border: var(--outline) solid var(--ink);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow);
+    transition: transform 60ms, box-shadow 60ms, background 90ms;
   }
   .pill:hover { background: var(--panel-hi); }
-  .pill.on { background: var(--accent); color: #101010; }
+  .pill:active {
+    transform: translate(var(--shadow-x), var(--shadow-y));
+    box-shadow: 0 0 0 var(--shadow);
+  }
+  .pill.on { background: var(--accent); color: var(--on-accent); }
   .main { display: flex; gap: 16px; flex: 1; min-height: 0; }
   .knobwrap {
     width: 150px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 8px;
+    align-items: center; justify-content: center; gap: 9px;
   }
-  #knob { cursor: ns-resize; touch-action: none; }
-  .knoblabel { font-weight: 700; letter-spacing: 0.1em; font-size: 12px; }
-  .knoblabel b { color: var(--accent); }
+  #knob { cursor: ns-resize; touch-action: none; filter: var(--knob-shadow); }
+  #knob .track { stroke: var(--knob-track); }
+  #knob .arc { stroke: var(--accent); }
+  #knob .body { fill: var(--knob-body); stroke: var(--ink); stroke-width: var(--outline); }
+  #knob .dot { fill: var(--accent); stroke: var(--ink); stroke-width: 2; }
+  .knoblabel { font-weight: 800; letter-spacing: 0.1em; font-size: 12px; }
+  .knoblabel b { color: var(--accent-text); }
   .display {
-    flex: 1; background: #0b0b0b; border-radius: 10px; padding: 10px;
-    box-sizing: border-box; display: flex; min-width: 0;
+    flex: 1; background: var(--display-bg); border-radius: var(--radius);
+    padding: 10px; box-sizing: border-box; display: flex; min-width: 0;
+    border: var(--outline) solid var(--ink);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow);
   }
   #curve { width: 100%; height: 100%; display: block; }
   body.drawable #curve { cursor: crosshair; }
-  body.drawable .display { outline: 1px solid #3a3a10; }
   .shelf { display: flex; flex-direction: column; gap: 6px; }
   .caption {
     display: flex; justify-content: space-between; font-size: 11px;
     letter-spacing: 0.12em; text-transform: uppercase;
   }
-  .caption b { color: var(--accent); }
+  .caption b { color: var(--accent-text); }
   .tiles { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
   .tile {
-    background: var(--panel); border-radius: 6px; padding: 5px;
-    cursor: pointer; transition: background 90ms;
+    background: var(--panel); border-radius: calc(var(--radius) - 4px);
+    padding: 4px; cursor: pointer; border: var(--outline) solid var(--ink);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow);
+    transition: transform 60ms, box-shadow 60ms, background 90ms;
   }
   .tile:hover { background: var(--panel-hi); }
+  .tile:active {
+    transform: translate(var(--shadow-x), var(--shadow-y));
+    box-shadow: 0 0 0 var(--shadow);
+  }
   .tile canvas { width: 100%; height: 30px; display: block; }
   .tile.on { background: var(--accent); }
   body.bypassed .display, body.bypassed .tiles, body.bypassed .knobwrap { opacity: 0.35; }
 
-  /* The curve library, over everything while it is open. */
+  /* The curve library and the skin picker, over everything while open. */
   .browser {
     position: absolute; inset: 12px; z-index: 5; display: none;
-    flex-direction: column; gap: 10px; padding: 14px; box-sizing: border-box;
-    background: #0e0e0e; border-radius: 10px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    flex-direction: column; gap: 12px; padding: 15px; box-sizing: border-box;
+    background: var(--overlay); border-radius: var(--radius);
+    border: var(--outline) solid var(--ink);
+    box-shadow: 6px 6px 0 var(--shadow);
   }
   body.browsing .browser { display: flex; }
   .browser .head { display: flex; align-items: center; gap: 10px; }
   .browser .head span {
-    font-weight: 700; letter-spacing: 0.12em; font-size: 12px; margin-right: auto;
+    font-weight: 800; letter-spacing: 0.12em; font-size: 12px;
+    margin-right: auto; color: var(--accent-text);
   }
   .cards {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px;
     overflow-y: auto; flex: 1; align-content: start;
   }
   .card {
-    position: relative; background: var(--panel); border-radius: 8px;
-    padding: 6px; cursor: pointer; transition: background 90ms;
+    position: relative; background: var(--panel); padding: 6px;
+    border-radius: calc(var(--radius) - 4px); cursor: pointer;
+    border: var(--outline) solid var(--ink);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow);
   }
   .card:hover { background: var(--panel-hi); }
   .card canvas { width: 100%; height: 42px; display: block; }
@@ -251,18 +328,165 @@ const HTML: &str = r##"<!DOCTYPE html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .card .kill {
-    position: absolute; top: 2px; right: 5px; font-size: 12px; line-height: 1;
-    opacity: 0.35; padding: 2px 4px; border-radius: 4px;
+    position: absolute; top: -9px; right: -7px; font-size: 11px; line-height: 1;
+    background: var(--panel); border: var(--outline) solid var(--ink);
+    border-radius: 999px; padding: 2px 6px;
   }
-  .card .kill:hover { opacity: 1; }
-  .card .kill.armed { opacity: 1; background: #b03030; color: #fff; }
-  .empty { color: #5a5a5a; font-size: 12px; padding: 8px 2px; }
-  .saverow { display: flex; gap: 8px; }
+  .card .kill.armed { background: #e23b3b; color: #fff; }
+  .empty { opacity: 0.6; font-size: 12px; padding: 8px 2px; }
+  .saverow { display: flex; gap: 9px; }
   .saverow input {
-    flex: 1; background: #1e1e1e; border: none; border-radius: 6px;
-    color: var(--text); padding: 7px 10px; font: inherit; outline: none;
+    flex: 1; background: var(--field); border: var(--outline) solid var(--ink);
+    border-radius: 999px; color: var(--text); padding: 8px 13px;
+    font: inherit; outline: none;
   }
-  .saverow input:focus { background: #262626; }
+
+  /* Skin picker: same overlay family, anchored under the bar. */
+  .skins {
+    position: absolute; top: 58px; right: 16px; z-index: 6; display: none;
+    flex-direction: column; gap: 7px; padding: 12px; box-sizing: border-box;
+    background: var(--overlay); border-radius: var(--radius);
+    border: var(--outline) solid var(--ink);
+    box-shadow: 6px 6px 0 var(--shadow); min-width: 190px;
+  }
+  body.skinning .skins { display: flex; }
+  .skinrow {
+    display: flex; align-items: center; gap: 9px; cursor: pointer;
+    padding: 6px 9px; border-radius: 999px; border: var(--outline) solid transparent;
+    font-weight: 800; font-size: 12px; letter-spacing: 0.04em;
+  }
+  .skinrow:hover { background: var(--panel); }
+  .skinrow.on { background: var(--panel); border-color: var(--ink); }
+  .swatch { display: flex; gap: 3px; }
+  .swatch i {
+    width: 11px; height: 11px; border-radius: 3px; display: block;
+    border: 2px solid var(--ink); box-sizing: border-box;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Skins. Palettes and attitude only — no marks, no characters, no
+   * badges. The names are ours.
+   * ------------------------------------------------------------------ */
+
+  /* Tianguis: the burned-DVD-cover look. Chrome bevels, gold on navy,
+     glossy buttons and a sparkle or two. Loud on purpose. */
+  body[data-skin="tianguis"] {
+    --font: 800 13px/1.2 "Avenir Next", "Futura", -apple-system, sans-serif;
+    --bg: #0a1f4d; --panel: linear-gradient(#3f6dbf, #14275c);
+    --panel-hi: linear-gradient(#5b8ede, #1b3a7a);
+    --ink: #041030; --shadow: #041030; --accent: #ffcf3f; --accent-text: #ffd964;
+    --on-accent: #2a1c00; --text: #eaf2ff; --overlay: #0d2559; --field: #081a42;
+    --display-bg: #050f2b; --knob-track: #1b3a7a; --knob-body: #12295e;
+    --knob-shadow: drop-shadow(3px 4px 0 #041030);
+    --brand-font: 900 italic 32px/1 "Avenir Next", sans-serif;
+    --brand-color: #ffd964; --brand-stroke: 4px #041030; --brand-tilt: rotate(-4deg) skewX(-6deg);
+    --brand-fill: linear-gradient(#ffffff, #ffd964 45%, #b47a00 55%, #ffe9a8);
+    --brand-clip: text; --brand-fill-color: transparent;
+    --bg-image:
+      radial-gradient(circle at 12% 18%, #ffffff22 0 2px, transparent 3px),
+      radial-gradient(circle at 78% 8%, #ffffff1f 0 2px, transparent 3px),
+      radial-gradient(circle at 92% 72%, #ffffff1a 0 2px, transparent 3px),
+      radial-gradient(circle at 30% 88%, #ffffff14 0 2px, transparent 3px),
+      linear-gradient(160deg, #14387f 0%, #0a1f4d 55%, #061634 100%);
+    --bg-size: auto;
+    --curve: #ffcf3f; --curve-fill: rgba(255, 207, 63, 0.18);
+    --dry-line: #35508f; --guide: #1d3572;
+    --wave-dry: rgba(190, 214, 255, 0.16); --wave-wet: rgba(226, 238, 255, 0.5);
+    --tile-line: #cddcff; --tile-line-on: #2a1c00;
+  }
+  body[data-skin="tianguis"] .pill,
+  body[data-skin="tianguis"] .tile,
+  body[data-skin="tianguis"] .card {
+    background-image: linear-gradient(#ffffff30, #ffffff00 45%);
+  }
+
+  /* Miedo: sickly farmhouse palette — bruised purple, sour teal, dusty
+     pink. Thin nervous outlines, everything slightly off-square. */
+  body[data-skin="miedo"] {
+    --font: 700 13px/1.2 "Avenir Next", -apple-system, sans-serif;
+    --outline: 2px; --radius: 10px; --shadow-x: 4px; --shadow-y: 4px;
+    --bg: #241a33; --panel: #372a4a; --panel-hi: #453458;
+    --ink: #0f0a17; --shadow: #0f0a17; --accent: #4fb3a5; --accent-text: #7fd8cb;
+    --on-accent: #0f0a17; --text: #ded3e8; --overlay: #2c2140; --field: #1b1428;
+    --display-bg: #150f20; --knob-track: #453458; --knob-body: #2b2040;
+    --knob-shadow: drop-shadow(4px 4px 0 #0f0a17);
+    --brand-font: 900 30px/1 "Avenir Next", sans-serif;
+    --brand-color: #d98cae; --brand-stroke: 3px #0f0a17; --brand-tilt: rotate(-2deg) skewY(-2deg);
+    --brand-fill: none; --brand-clip: border-box; --brand-fill-color: currentColor;
+    --bg-image: radial-gradient(#ffffff0a 1px, transparent 1.2px); --bg-size: 7px 7px;
+    --curve: #4fb3a5; --curve-fill: rgba(79, 179, 165, 0.16);
+    --dry-line: #4a3a5e; --guide: #322544;
+    --wave-dry: rgba(217, 140, 174, 0.15); --wave-wet: rgba(232, 216, 240, 0.42);
+    --tile-line: #b9a7c9; --tile-line-on: #0f0a17;
+  }
+  body[data-skin="miedo"] .tile:nth-child(odd) { transform: rotate(-0.8deg); }
+  body[data-skin="miedo"] .tile:nth-child(even) { transform: rotate(0.6deg); }
+
+  /* Azúcar: candy pinks and mints over hard black ink, the way a
+     Saturday-morning show fills a screen. */
+  body[data-skin="azucar"] {
+    --font: 800 13px/1.2 "Avenir Next", -apple-system, sans-serif;
+    --outline: 3px; --radius: 16px;
+    --bg: #ffe3f1; --panel: #ffffff; --panel-hi: #ffd0e6;
+    --ink: #17121a; --shadow: #17121a; --accent: #ff4fa3; --accent-text: #d81f77;
+    --on-accent: #ffffff; --text: #2b2230; --overlay: #fff6fb; --field: #ffffff;
+    --display-bg: #1a1420; --knob-track: #ffd0e6; --knob-body: #ffffff;
+    --knob-shadow: drop-shadow(4px 4px 0 #17121a);
+    --brand-font: 900 33px/1 "Avenir Next", sans-serif;
+    --brand-color: #ff4fa3; --brand-stroke: 5px #17121a; --brand-tilt: rotate(-3deg);
+    --brand-fill: none; --brand-clip: border-box; --brand-fill-color: currentColor;
+    --bg-image:
+      radial-gradient(circle at 20% 30%, #8ef0d055 0 60px, transparent 61px),
+      radial-gradient(circle at 85% 70%, #7ec8ff55 0 70px, transparent 71px),
+      radial-gradient(#17121a14 1.4px, transparent 1.5px);
+    --bg-size: auto, auto, 10px 10px;
+    --curve: #ff4fa3; --curve-fill: rgba(255, 79, 163, 0.2);
+    --dry-line: #4b3d55; --guide: #2e2536;
+    --wave-dry: rgba(142, 240, 208, 0.22); --wave-wet: rgba(126, 200, 255, 0.55);
+    --tile-line: #17121a; --tile-line-on: #ffffff;
+  }
+
+  /* Rockola: diner black, banana yellow and orange, chrome-free and
+     unapologetically loud about it. */
+  body[data-skin="rockola"] {
+    --font: 800 13px/1.2 "Avenir Next", "Futura", -apple-system, sans-serif;
+    --outline: 4px; --radius: 14px; --shadow-x: 4px; --shadow-y: 4px;
+    --bg: #14110c; --panel: #24201a; --panel-hi: #322c22;
+    --ink: #000000; --shadow: #ff7a1a; --accent: #ffd400; --accent-text: #ffd400;
+    --on-accent: #14110c; --text: #f5ead2; --overlay: #1c1813; --field: #0e0c08;
+    --display-bg: #0b0906; --knob-track: #322c22; --knob-body: #24201a;
+    --knob-shadow: drop-shadow(4px 4px 0 #ff7a1a);
+    --brand-font: 900 italic 33px/1 "Avenir Next", sans-serif;
+    --brand-color: #ffd400; --brand-stroke: 5px #000000; --brand-tilt: rotate(-4deg);
+    --brand-fill: none; --brand-clip: border-box; --brand-fill-color: currentColor;
+    --bg-image:
+      repeating-linear-gradient(45deg, #ffffff08 0 10px, transparent 10px 20px);
+    --bg-size: auto;
+    --curve: #ffd400; --curve-fill: rgba(255, 122, 26, 0.18);
+    --dry-line: #55492f; --guide: #2a2419;
+    --wave-dry: rgba(245, 234, 210, 0.14); --wave-wet: rgba(255, 200, 120, 0.45);
+    --tile-line: #d8c9a4; --tile-line-on: #14110c;
+  }
+
+  /* Zape: what the plugin looked like before it had skins. */
+  body[data-skin="zape"] {
+    --font: 500 13px/1.2 -apple-system, sans-serif;
+    --outline: 0px; --radius: 10px; --shadow-x: 0px; --shadow-y: 0px;
+    --bg: #131313; --panel: #1e1e1e; --panel-hi: #2a2a2a;
+    --ink: transparent; --shadow: transparent; --accent: #ffd400;
+    --accent-text: #ffd400; --on-accent: #101010; --text: #9a9a9a;
+    --overlay: #0e0e0e; --field: #1e1e1e;
+    --display-bg: #0b0b0b; --knob-track: #242424; --knob-body: #1e1e1e;
+    --knob-shadow: none;
+    --brand-font: 800 22px/1 -apple-system, sans-serif;
+    --brand-color: #ffd400; --brand-stroke: 0; --brand-tilt: none;
+    --brand-fill: none; --brand-clip: border-box; --brand-fill-color: currentColor;
+    --bg-image: none; --bg-size: auto;
+    --curve: #ffd400; --curve-fill: rgba(255, 212, 0, 0.08);
+    --dry-line: #2f2f2f; --guide: #1f1f1f;
+    --wave-dry: rgba(190, 190, 190, 0.13); --wave-wet: rgba(225, 225, 225, 0.42);
+    --tile-line: #6a6a6a; --tile-line-on: #101010;
+  }
 </style>
 </head>
 <body>
@@ -270,8 +494,10 @@ const HTML: &str = r##"<!DOCTYPE html>
     <div class="brand">ZAPE</div>
     <div class="seg" id="rate"></div>
     <div class="pill" id="curves">CURVES</div>
+    <div class="pill" id="skin-button">SKIN</div>
     <div class="pill" id="bypass">BYPASS</div>
   </div>
+  <div class="skins" id="skins"></div>
   <div class="browser">
     <div class="head">
       <span>CURVE LIBRARY</span>
@@ -286,12 +512,12 @@ const HTML: &str = r##"<!DOCTYPE html>
   <div class="main">
     <div class="knobwrap">
       <svg id="knob" width="132" height="132" viewBox="0 0 132 132">
-        <circle cx="66" cy="66" r="52" fill="none" stroke="#242424" stroke-width="10"
+        <circle class="track" cx="66" cy="66" r="52" fill="none" stroke-width="10"
                 stroke-dasharray="245 327" stroke-linecap="round" transform="rotate(135 66 66)"/>
-        <circle id="arc" cx="66" cy="66" r="52" fill="none" stroke="#ffd400" stroke-width="10"
+        <circle class="arc" id="arc" cx="66" cy="66" r="52" fill="none" stroke-width="10"
                 stroke-dasharray="0 327" stroke-linecap="round" transform="rotate(135 66 66)"/>
-        <circle cx="66" cy="66" r="38" fill="#1e1e1e"/>
-        <circle id="dot" cx="66" cy="34" r="4.5" fill="#ffd400"/>
+        <circle class="body" cx="66" cy="66" r="38"/>
+        <circle class="dot" id="dot" cx="66" cy="34" r="5"/>
       </svg>
       <div class="knoblabel">MIX <b id="mixvalue">--</b></div>
     </div>
@@ -306,7 +532,18 @@ const HTML: &str = r##"<!DOCTYPE html>
   const RATE = 0, MIX = 1, CURVE = 2, BYPASS = 3;
   // The drawn curve is the last step of the Curve parameter.
   const CURVE_CUSTOM = 15;
-  const ACCENT = '#ffd400';
+
+  // Skins are CSS: the canvas reads its colours back out of the same
+  // variables the stylesheet sets, so a new skin never touches this file.
+  const SKINS = [
+    { id: 'tianguis', label: 'TIANGUIS', dots: ['#0a1f4d', '#ffcf3f', '#cddcff'] },
+    { id: 'miedo', label: 'MIEDO', dots: ['#241a33', '#4fb3a5', '#d98cae'] },
+    { id: 'azucar', label: 'AZUCAR', dots: ['#ffe3f1', '#ff4fa3', '#8ef0d0'] },
+    { id: 'rockola', label: 'ROCKOLA', dots: ['#14110c', '#ffd400', '#ff7a1a'] },
+    { id: 'zape', label: 'ZAPE', dots: ['#131313', '#ffd400', '#9a9a9a'] },
+  ];
+  const ink = (name) =>
+    getComputedStyle(document.body).getPropertyValue('--' + name).trim();
 
   const post = (m) => window.webkit.messageHandlers.seco.postMessage(m);
   const gesture = (id, plain) => {
@@ -436,7 +673,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       const ctx = tiles[i].__canvas.getContext('2d');
       ctx.clearRect(0, 0, tiles[i].__canvas.width, tiles[i].__canvas.height);
       // The grey line is unreadable on the selected tile's yellow.
-      if (points) stroke(ctx, points, 1, i === active ? '#101010' : '#6a6a6a', 3, false);
+      if (points) stroke(ctx, points, 1, ink(i === active ? 'tile-line-on' : 'tile-line'), 3, false);
     }
   }
 
@@ -485,8 +722,8 @@ const HTML: &str = r##"<!DOCTYPE html>
     if (!points) return;
     // Dry shape behind, mixed shape in front: the front line is literally
     // the gain the audio is multiplied by.
-    if (activeMix < 0.999) stroke(ctx, points, 1, '#2f2f2f', 3, false);
-    stroke(ctx, points, activeMix, ACCENT, 5, true);
+    if (activeMix < 0.999) stroke(ctx, points, 1, ink('dry-line'), 3, false);
+    stroke(ctx, points, activeMix, ink('curve'), 5, true);
     if (isCustom() && customPoints) handles(ctx);
   }
 
@@ -498,8 +735,8 @@ const HTML: &str = r##"<!DOCTYPE html>
                       1 + (customPoints[i] - 1) * activeMix);
       ctx.beginPath();
       ctx.arc(at.x, at.y, 7, 0, Math.PI * 2);
-      ctx.fillStyle = i === 0 ? '#131313' : ACCENT;
-      ctx.strokeStyle = ACCENT;
+      ctx.fillStyle = i === 0 ? ink('display-bg') : ink('curve');
+      ctx.strokeStyle = ink('curve');
       ctx.lineWidth = 3;
       ctx.fill();
       ctx.stroke();
@@ -514,8 +751,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   function waveform(ctx) {
     const half = scope.length / 2;
     // Dry first, as a dim ghost, so the ducked signal sits inside it.
-    band(ctx, scope.slice(0, half), 'rgba(190, 190, 190, 0.13)');
-    band(ctx, scope.slice(half), 'rgba(225, 225, 225, 0.42)');
+    band(ctx, scope.slice(0, half), ink('wave-dry'));
+    band(ctx, scope.slice(half), ink('wave-wet'));
   }
 
   function band(ctx, values, fill) {
@@ -537,7 +774,7 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   function guides(ctx) {
     ctx.save();
-    ctx.strokeStyle = '#1f1f1f';
+    ctx.strokeStyle = ink('guide');
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 8]);
     for (const norm of [0, 0.5, 1]) {
@@ -577,7 +814,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       ctx.lineTo(ctx.canvas.width, ctx.canvas.height);
       ctx.lineTo(0, ctx.canvas.height);
       ctx.closePath();
-      ctx.fillStyle = 'rgba(255, 212, 0, 0.08)';
+      ctx.fillStyle = ink('curve-fill');
       ctx.fill();
     }
   }
@@ -625,6 +862,53 @@ const HTML: &str = r##"<!DOCTYPE html>
   knob.addEventListener('pointerup', endDrag);
   knob.addEventListener('pointercancel', endDrag);
 
+  // ---- skins ------------------------------------------------------------
+  // The plugin remembers the choice on disk (a preference, not session
+  // state) and pushes it back with the shapes; the page only has to apply
+  // it and repaint, because every colour lives in CSS.
+  window.__seco_skin = (id) => {
+    if (document.body.dataset.skin === id) return;
+    document.body.dataset.skin = id;
+    buildSkinList();
+    // Tiles are painted, not styled: their canvases hold the old skin's
+    // colours until something repaints them, and the parameter push that
+    // would do it a tick later is too slow to look deliberate.
+    paintedSelection = -1;
+    if (params) syncSelection();
+    draw();
+  };
+
+  function buildSkinList() {
+    const panel = document.getElementById('skins');
+    panel.textContent = '';
+    SKINS.forEach((skin) => {
+      const row = document.createElement('div');
+      row.className = 'skinrow' + (document.body.dataset.skin === skin.id ? ' on' : '');
+      const swatch = document.createElement('div');
+      swatch.className = 'swatch';
+      skin.dots.forEach((colour) => {
+        const dot = document.createElement('i');
+        dot.style.background = colour;
+        swatch.appendChild(dot);
+      });
+      const label = document.createElement('span');
+      label.textContent = skin.label;
+      row.appendChild(swatch);
+      row.appendChild(label);
+      row.addEventListener('click', () => {
+        window.__seco_skin(skin.id);
+        post('msg skin ' + skin.id);
+        document.body.classList.remove('skinning');
+      });
+      panel.appendChild(row);
+    });
+  }
+
+  document.getElementById('skin-button').addEventListener('click', () => {
+    buildSkinList();
+    document.body.classList.toggle('skinning');
+  });
+
   // ---- the curve library ------------------------------------------------
   // Saved curves live on disk; the plugin answers `msg` requests with the
   // whole list, points included, so a card can draw the shape rather than
@@ -663,7 +947,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       // The saved shape, drawn with the same sampling as the big display.
       const saved = customPoints;
       customPoints = preset.p;
-      stroke(canvas.getContext('2d'), sampleCustom(), 1, '#6a6a6a', 3, false);
+      stroke(canvas.getContext('2d'), sampleCustom(), 1, ink('tile-line'), 3, false);
       customPoints = saved;
 
       card.addEventListener('click', () => {
@@ -695,6 +979,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   };
 
   document.getElementById('curves').addEventListener('click', () => {
+    document.body.classList.remove('skinning');
     document.body.classList.add('browsing');
     post('msg list');
   });
@@ -859,6 +1144,30 @@ mod tests {
         let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/zape-editor.html");
         std::fs::write(out, page).expect("write preview");
         println!("wrote {out}");
+    }
+
+    /// A skin is a preference kept on disk, and the page is told which one
+    /// on every push — it cannot know until the plugin says so.
+    #[test]
+    fn the_skin_is_remembered_and_pushed_to_the_page() {
+        let _library = crate::library::TempLibrary::new("editor-skin");
+        // The cache is process-wide; start from a known state.
+        *SKIN.lock().unwrap() = None;
+
+        let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
+        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")), "{js}");
+
+        assert!(message("skin rockola").is_none(), "the page already applied it");
+        let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
+        assert!(js.contains("__seco_skin(\"rockola\")"), "{js}");
+        assert_eq!(crate::library::read_skin().as_deref(), Some("rockola"));
+
+        // A name the plugin does not ship goes nowhere: it ends up in a
+        // stylesheet selector and in a file.
+        message("skin ../../etc/passwd");
+        message("skin \"><script>");
+        assert_eq!(crate::library::read_skin().as_deref(), Some("rockola"));
+        *SKIN.lock().unwrap() = None;
     }
 
     /// The library requests the page can make, end to end through the disk.

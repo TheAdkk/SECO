@@ -30,26 +30,68 @@ const MAX_ENTRIES: usize = 128;
 /// File extension, distinctive enough to be recognizable in a folder.
 const EXTENSION: &str = "zapecurve";
 
-/// Where curves live.
+/// Where Zape keeps everything it owns on disk: the curve library and the
+/// chosen skin.
 ///
-/// `SECO_ZAPE_CURVES` overrides it — that is what the tests use, and it
-/// gives anyone a way to point the library at a synced folder.
-pub(crate) fn directory() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("SECO_ZAPE_CURVES") {
+/// `SECO_ZAPE_DIR` overrides it — that is what the tests use, and it gives
+/// anyone a way to point the whole lot at a synced folder. One root rather
+/// than one variable per file: pointing at the curve folder alone left the
+/// skin file being written to *its parent*, which during tests was the
+/// system temp directory.
+pub(crate) fn data_directory() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SECO_ZAPE_DIR") {
         return Some(PathBuf::from(path));
     }
     if cfg!(target_os = "macos") {
         let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library/Application Support/SECO/Zape/curves"))
+        Some(PathBuf::from(home).join("Library/Application Support/SECO/Zape"))
     } else if cfg!(target_os = "windows") {
         let appdata = std::env::var_os("APPDATA")?;
-        Some(PathBuf::from(appdata).join("SECO/Zape/curves"))
+        Some(PathBuf::from(appdata).join("SECO/Zape"))
     } else {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-        Some(base.join("seco/zape/curves"))
+        Some(base.join("seco/zape"))
     }
+}
+
+/// Where curves live: one file each, inside the data directory.
+pub(crate) fn directory() -> Option<PathBuf> {
+    Some(data_directory()?.join("curves"))
+}
+
+/// Name of the file holding the chosen skin, next to the curves folder.
+const SKIN_FILE: &str = "skin";
+
+/// The skin the user last chose, if any. A preference, not state: it lives
+/// beside the library rather than in the session, so it follows the person
+/// rather than the project.
+pub(crate) fn read_skin() -> Option<String> {
+    let path = data_directory()?.join(SKIN_FILE);
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > 64 {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let name = text.trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Remembers the chosen skin. The caller has already checked the name
+/// against the skins it ships, so this only has to write it.
+pub(crate) fn write_skin(name: &str) -> bool {
+    let Some(dir) = data_directory() else {
+        return false;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let temp = dir.join(format!("{SKIN_FILE}.tmp"));
+    if std::fs::write(&temp, name.as_bytes()).is_err() {
+        return false;
+    }
+    std::fs::rename(&temp, dir.join(SKIN_FILE)).is_ok()
 }
 
 /// A saved curve.
@@ -195,7 +237,7 @@ impl TempLibrary {
         let _ = std::fs::remove_dir_all(&path);
         // SAFETY: the guard above makes this the only thread touching the
         // environment for the duration.
-        unsafe { std::env::set_var("SECO_ZAPE_CURVES", &path) };
+        unsafe { std::env::set_var("SECO_ZAPE_DIR", &path) };
         Self { path, _guard: guard }
     }
 
@@ -209,7 +251,7 @@ impl Drop for TempLibrary {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
         // SAFETY: as in `new`.
-        unsafe { std::env::remove_var("SECO_ZAPE_CURVES") };
+        unsafe { std::env::remove_var("SECO_ZAPE_DIR") };
     }
 }
 
@@ -257,7 +299,7 @@ mod tests {
         let names: Vec<String> = list().into_iter().map(|entry| entry.name).collect();
         assert_eq!(names.len(), 3, "{names:?}");
         assert!(names.iter().all(|name| !name.contains('/') && !name.contains("..")), "{names:?}");
-        let files = std::fs::read_dir(library.path()).unwrap().count();
+        let files = std::fs::read_dir(directory().unwrap()).unwrap().count();
         assert_eq!(files, 3, "files escaped the library directory");
 
         // A name with nothing to keep is refused rather than turned into
@@ -268,22 +310,32 @@ mod tests {
         // A traversing delete only ever reaches inside the library: it
         // reports success because the sanitized name is simply not there,
         // and the file it was aiming at is untouched.
-        let outside = library.path().parent().unwrap().join("seco-zape-bystander");
+        let outside = library.path().join("seco-zape-bystander");
         std::fs::write(&outside, b"do not delete me").unwrap();
-        delete("../seco-zape-bystander");
+        delete("../../seco-zape-bystander");
         assert!(outside.exists(), "delete escaped the library directory");
         std::fs::remove_file(&outside).unwrap();
     }
 
     #[test]
+    fn the_chosen_skin_is_remembered() {
+        let _library = TempLibrary::new("skin");
+        assert_eq!(read_skin(), None, "no file yet means no preference");
+        assert!(write_skin("tianguis"));
+        assert_eq!(read_skin().as_deref(), Some("tianguis"));
+        assert!(write_skin("rockola"));
+        assert_eq!(read_skin().as_deref(), Some("rockola"));
+    }
+
+    #[test]
     fn strays_in_the_folder_are_ignored() {
-        let library = TempLibrary::new("strays");
-        std::fs::create_dir_all(library.path()).unwrap();
-        std::fs::write(library.path().join("notes.txt"), b"not a curve").unwrap();
-        std::fs::write(library.path().join("empty.zapecurve"), b"").unwrap();
-        std::fs::write(library.path().join("junk.zapecurve"), b"hello there").unwrap();
-        std::fs::write(library.path().join("huge.zapecurve"), vec![b'0'; 5000]).unwrap();
-        std::fs::create_dir_all(library.path().join("subdir.zapecurve")).unwrap();
+        let _library = TempLibrary::new("strays");
+        std::fs::create_dir_all(directory().unwrap()).unwrap();
+        std::fs::write(directory().unwrap().join("notes.txt"), b"not a curve").unwrap();
+        std::fs::write(directory().unwrap().join("empty.zapecurve"), b"").unwrap();
+        std::fs::write(directory().unwrap().join("junk.zapecurve"), b"hello there").unwrap();
+        std::fs::write(directory().unwrap().join("huge.zapecurve"), vec![b'0'; 5000]).unwrap();
+        std::fs::create_dir_all(directory().unwrap().join("subdir.zapecurve")).unwrap();
         assert!(save("real", drawn()));
 
         let names: Vec<String> = list().into_iter().map(|entry| entry.name).collect();

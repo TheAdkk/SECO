@@ -160,9 +160,11 @@ gets, not an illustration of it.
 ### The curve library, and where presets are allowed to live
 
 Drawn curves save to disk — one small file each, under
-`~/Library/Application Support/SECO/Zape/curves` (macOS), `$XDG_CONFIG_HOME`
-or `~/.config/seco/zape/curves` (Linux), `%APPDATA%\SECO\Zape\curves`
-(Windows), overridable with `SECO_ZAPE_CURVES`.
+`~/Library/Application Support/SECO/Zape` (macOS), `$XDG_CONFIG_HOME` or
+`~/.config/seco/zape` (Linux), `%APPDATA%\SECO\Zape` (Windows), overridable
+with `SECO_ZAPE_DIR`. One root for everything Zape owns: pointing an
+override at the curve folder alone left the skin preference being written to
+*its parent*, which during tests was the system temp directory.
 
 One rule comes before the feature: **the curve in use lives in the session,
 not in the library.** `clap.state` already carries it, so a project sounds
@@ -189,6 +191,29 @@ tests check that a traversing save lands inside the directory and a
 traversing delete leaves a bystander file alone. Saves go to a temporary
 file and are renamed, which is atomic on all three platforms: a crash
 mid-write leaves the previous curve rather than half of a new one.
+
+### Skins
+
+Five of them, chosen from the editor and remembered on disk beside the curve
+library — a preference, so it follows the person rather than the project and
+never dirties a session.
+
+They are CSS and nothing else. Every colour the canvas drawing uses is a
+custom property the stylesheet sets, read back with `getComputedStyle`, so
+adding a skin is a block of variables and no JavaScript. The one thing that
+is not automatic: tile thumbnails are *painted*, not styled, so switching
+skins repaints them rather than waiting for the next parameter push to do
+it a tick later.
+
+The skin id is validated against the shipped list before it is written or
+sent back — it ends up in a stylesheet selector and in a filename, and it
+arrives from a webview.
+
+They are palettes and attitude, taken from things worth ripping off: a
+burned-DVD cover from a Mexico State tianguis (gold on navy, chrome bevels,
+sparkles — the default), a bruised-purple cartoon farmhouse, candy pinks
+over hard black ink, and a diner in yellow and orange. No marks, no badges,
+no characters, no team crests; the names are ours.
 
 ### The picture of the audio (a deliberately weak channel)
 

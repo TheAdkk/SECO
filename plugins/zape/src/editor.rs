@@ -257,12 +257,46 @@ const HTML: &str = r##"<!DOCTYPE html>
   }
   body {
     display: flex; flex-direction: column; padding: 16px;
-    box-sizing: border-box; gap: 12px; position: relative;
+    box-sizing: border-box; gap: 10px; position: relative;
     background-image: var(--bg-image); background-size: var(--bg-size);
   }
-  .bar { display: flex; align-items: center; gap: 7px; }
+  /* The background: speed streaks, two blooms and a flare, all of it
+     behind the interface and none of it in the way of a pointer. */
+  .glowlayer {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(circle at 14% 12%, var(--glow) 0 3px, transparent 4px),
+      radial-gradient(38% 22% at 14% 12%, var(--glow), transparent 70%),
+      radial-gradient(46% 30% at 88% 84%, var(--glow), transparent 72%),
+      repeating-linear-gradient(72deg, var(--streak) 0 2px, transparent 2px 46px),
+      radial-gradient(120% 90% at 50% 50%, transparent 45%, #00000055 100%);
+    opacity: 0.9;
+  }
+  .bar, .main, .shelf { position: relative; z-index: 1; }
+
+  .bar {
+    display: flex; align-items: center; gap: 7px;
+    background: var(--plaque); border: var(--outline) solid var(--ink);
+    border-radius: 999px; padding: 5px 8px;
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow), inset 0 1px 0 #ffffff55;
+  }
+  .brandwrap { display: flex; align-items: center; margin-right: auto; position: relative; }
+  /* The flare behind the wordmark. Rays are drawn by script so the markup
+     stays one element instead of twenty. */
+  .burst {
+    position: absolute; left: -22px; top: 50%; width: 118px; height: 118px;
+    transform: translateY(-50%); pointer-events: none; opacity: 0.3;
+  }
+  /* The rays are the accent, not the glow: at glow alpha they were there
+     and invisible, which is the worst of both. */
+  .burst .rays { fill: var(--accent); }
+  .bolt { width: 15px; height: 25px; margin-left: 7px; }
+  .bolt path {
+    fill: var(--accent); stroke: var(--ink); stroke-width: 2.5;
+    stroke-linejoin: round;
+  }
   .brand {
-    font: var(--brand-font); letter-spacing: 0.04em; margin-right: auto;
+    font: var(--brand-font); letter-spacing: 0.04em;
     color: var(--brand-color); -webkit-text-stroke: var(--brand-stroke);
     paint-order: stroke fill; transform: var(--brand-tilt);
     background: var(--brand-fill); -webkit-background-clip: var(--brand-clip);
@@ -281,13 +315,19 @@ const HTML: &str = r##"<!DOCTYPE html>
     transform: translate(var(--shadow-x), var(--shadow-y));
     box-shadow: 0 0 0 var(--shadow);
   }
-  .pill.on { background: var(--accent); color: var(--on-accent); }
+  .pill.on {
+    background: var(--accent); color: var(--on-accent);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow), 0 0 14px var(--glow);
+  }
   .main { display: flex; gap: 16px; flex: 1; min-height: 0; }
   .knobwrap {
     width: 150px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 9px;
+    align-items: center; justify-content: center; gap: 7px;
   }
-  #knob { cursor: ns-resize; touch-action: none; filter: var(--knob-shadow); }
+  /* The SVG is authored at 132; the box is what the vertical budget can
+     actually spare once the header became a plaque. */
+  #knob { cursor: ns-resize; touch-action: none; filter: var(--knob-shadow);
+          width: 112px; height: 112px; }
   #knob .track { stroke: var(--knob-track); }
   #knob .arc { stroke: var(--accent); }
   #knob .body { fill: var(--knob-body); stroke: var(--ink); stroke-width: var(--outline); }
@@ -295,10 +335,10 @@ const HTML: &str = r##"<!DOCTYPE html>
   .knoblabel { font-weight: 800; letter-spacing: 0.1em; font-size: 12px; }
   /* flex: none, or the column squashes the canvas and the drawing
      inside it stretches with the box. */
-  .mascot { display: none; flex: none; width: 58px; height: 98px; }
+  .mascot { display: none; flex: none; width: 52px; height: 88px; }
   /* The 3D decoration replaces the flat one when it is both wanted and
      available; if the context never comes up, the drawing stays. */
-  .mascot3d { display: none; flex: none; width: 58px; height: 98px; }
+  .mascot3d { display: none; flex: none; width: 52px; height: 88px; }
   body.fx3d .mascot3d { display: block; }
   body.fx3d .mascot { display: none !important; }
   .knoblabel b { color: var(--accent-text); }
@@ -310,6 +350,30 @@ const HTML: &str = r##"<!DOCTYPE html>
   }
   #curve { width: 100%; height: 100%; display: block; }
   body.drawable #curve { cursor: crosshair; }
+  .display { position: relative; }
+  /* Scanlines, at the alpha where you feel them and never read them: the
+     picture underneath is a meter and has to stay legible. */
+  .display::before {
+    content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    background: repeating-linear-gradient(#ffffff0a 0 1px, transparent 1px 3px);
+  }
+  /* Slapped on the glass, crooked, like every burned disc ever labelled. */
+  .sticker {
+    position: absolute; top: 12px; left: 12px; z-index: 3; pointer-events: none;
+    transform: rotate(-7deg); padding: 3px 9px; border-radius: 4px;
+    background: var(--accent); color: var(--on-accent);
+    border: 2px solid var(--ink); box-shadow: 2px 2px 0 var(--ink);
+    font-weight: 900; font-size: 10px; letter-spacing: 0.12em;
+  }
+  .rivets { position: absolute; inset: 6px; z-index: 3; pointer-events: none; }
+  .rivets i {
+    position: absolute; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--chrome-dot); box-shadow: 0 0 0 2px var(--ink);
+  }
+  .rivets i:nth-child(1) { left: 0; top: 0; }
+  .rivets i:nth-child(2) { right: 0; top: 0; }
+  .rivets i:nth-child(3) { left: 0; bottom: 0; }
+  .rivets i:nth-child(4) { right: 0; bottom: 0; }
   .shelf { display: flex; flex-direction: column; gap: 6px; }
   .caption {
     display: flex; justify-content: space-between; font-size: 11px;
@@ -329,7 +393,10 @@ const HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 0 0 var(--shadow);
   }
   .tile canvas { width: 100%; height: 30px; display: block; }
-  .tile.on { background: var(--accent); }
+  .tile.on {
+    background: var(--accent);
+    box-shadow: var(--shadow-x) var(--shadow-y) 0 var(--shadow), 0 0 14px var(--glow);
+  }
   body.bypassed .display, body.bypassed .tiles, body.bypassed .knobwrap { opacity: 0.35; }
 
   /* The curve library and the skin picker, over everything while open. */
@@ -406,6 +473,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* Tianguis: the burned-DVD-cover look. Chrome bevels, gold on navy,
      glossy buttons and a sparkle or two. Loud on purpose. */
   body[data-skin="tianguis"] {
+    --glow: #6fa8ff4d; --streak: #ffffff12; --chrome-dot: #cddcff;
+    --plaque: linear-gradient(#4d7fd6, #16306e 48%, #0d2154 52%, #2a4f9e);
     --font: 800 13px/1.2 "Avenir Next", "Futura", -apple-system, sans-serif;
     --bg: #0a1f4d; --panel: linear-gradient(#3f6dbf, #14275c);
     --panel-hi: linear-gradient(#5b8ede, #1b3a7a);
@@ -446,8 +515,6 @@ const HTML: &str = r##"<!DOCTYPE html>
   }
   body[data-skin="tianguis"] .bar {
     background: linear-gradient(#4d7fd6, #16306e 48%, #0d2154 52%, #2a4f9e);
-    border: 3px solid var(--ink); border-radius: 999px;
-    padding: 6px 10px; box-shadow: 3px 3px 0 var(--ink), inset 0 1px 0 #ffffff66;
   }
   body[data-skin="tianguis"] .brand {
     /* The shadow has to be a filter, not text-shadow: the letters are a
@@ -487,6 +554,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* Miedo: sickly farmhouse palette — bruised purple, sour teal, dusty
      pink. Thin nervous outlines, everything slightly off-square. */
   body[data-skin="miedo"] {
+    --glow: #4fb3a53d; --streak: #ffffff0a; --chrome-dot: #b9a7c9;
+    --plaque: linear-gradient(#4a3860, #2b2040);
     --font: 700 13px/1.2 "Avenir Next", -apple-system, sans-serif;
     --outline: 2px; --radius: 10px; --shadow-x: 4px; --shadow-y: 4px;
     --bg: #241a33; --panel: #372a4a; --panel-hi: #453458;
@@ -509,6 +578,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* Azúcar: candy pinks and mints over hard black ink, the way a
      Saturday-morning show fills a screen. */
   body[data-skin="azucar"] {
+    --glow: #ff4fa33d; --streak: #17121a0d; --chrome-dot: #ffffff;
+    --plaque: linear-gradient(#ffffff, #ffd7ea);
     --font: 800 13px/1.2 "Avenir Next", -apple-system, sans-serif;
     --outline: 3px; --radius: 16px;
     --bg: #ffe3f1; --panel: #ffffff; --panel-hi: #ffd0e6;
@@ -533,6 +604,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   /* Rockola: diner black, banana yellow and orange, chrome-free and
      unapologetically loud about it. */
   body[data-skin="rockola"] {
+    --glow: #ff7a1a4d; --streak: #ffffff0a; --chrome-dot: #ffd400;
+    --plaque: linear-gradient(#322c22, #17130d);
     --font: 800 13px/1.2 "Avenir Next", "Futura", -apple-system, sans-serif;
     --outline: 4px; --radius: 14px; --shadow-x: 4px; --shadow-y: 4px;
     --bg: #14110c; --panel: #24201a; --panel-hi: #322c22;
@@ -554,6 +627,8 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   /* Zape: what the plugin looked like before it had skins. */
   body[data-skin="zape"] {
+    --glow: #ffd40018; --streak: transparent; --chrome-dot: #2a2a2a;
+    --plaque: #181818;
     --font: 500 13px/1.2 -apple-system, sans-serif;
     --outline: 0px; --radius: 10px; --shadow-x: 0px; --shadow-y: 0px;
     --bg: #131313; --panel: #1e1e1e; --panel-hi: #2a2a2a;
@@ -574,8 +649,18 @@ const HTML: &str = r##"<!DOCTYPE html>
 </style>
 </head>
 <body>
+  <!-- Everything below is decoration and says so: it never takes a click. -->
+  <div class="glowlayer" aria-hidden="true"></div>
   <div class="bar">
-    <div class="brand">ZAPE</div>
+    <div class="brandwrap">
+      <svg class="burst" viewBox="0 0 120 120" aria-hidden="true">
+        <g class="rays"></g>
+      </svg>
+      <div class="brand">ZAPE</div>
+      <svg class="bolt" viewBox="0 0 24 40" aria-hidden="true">
+        <path d="M14 1 L3 22 h7 L8 39 L21 16 h-7 z"/>
+      </svg>
+    </div>
     <div class="seg" id="rate"></div>
     <div class="pill" id="curves">CURVES</div>
     <div class="pill" id="skin-button">SKIN</div>
@@ -621,7 +706,11 @@ const HTML: &str = r##"<!DOCTYPE html>
         <text class="labeltext" x="31" y="75" text-anchor="middle">ZAPE</text>
       </svg>
     </div>
-    <div class="display"><canvas id="curve"></canvas></div>
+    <div class="display">
+      <canvas id="curve"></canvas>
+      <div class="sticker" aria-hidden="true">SIN CLICKS</div>
+      <div class="rivets" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    </div>
   </div>
   <div class="shelf">
     <div class="caption"><span>CURVE</span><b id="curvename">--</b></div>
@@ -642,6 +731,21 @@ const HTML: &str = r##"<!DOCTYPE html>
     { id: 'rockola', label: 'ROCKOLA', dots: ['#14110c', '#ffd400', '#ff7a1a'] },
     { id: 'zape', label: 'ZAPE', dots: ['#131313', '#ffd400', '#9a9a9a'] },
   ];
+  // The flare behind the wordmark: uneven rays, because an even star looks
+  // like a loading spinner.
+  (() => {
+    const rays = document.querySelector('.burst .rays');
+    let path = '';
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const long = i % 4 === 0 ? 58 : (i % 2 === 0 ? 34 : 22);
+      const w = 0.055;
+      path += `M60 60 L${60 + Math.cos(a - w) * long} ${60 + Math.sin(a - w) * long} ` +
+              `L${60 + Math.cos(a + w) * long} ${60 + Math.sin(a + w) * long} Z `;
+    }
+    rays.innerHTML = `<path d="${path}"/>`;
+  })();
+
   const ink = (name) =>
     getComputedStyle(document.body).getPropertyValue('--' + name).trim();
 
@@ -974,6 +1078,11 @@ const HTML: &str = r##"<!DOCTYPE html>
   // thread, and it stops existing when the editor closes.
   let gl = null, program = null, buffers = null, spin = 0, lastFrame = 0, pulse = 0;
 
+  // Pitch keeps a three-quarter view of the shoulder; lean is what reads
+  // as "tilted", 30 degrees off upright. Straight up reads as a diagram.
+  const PITCH = -0.18;
+  const LEAN = 30 * Math.PI / 180;
+
   const VERTEX_SHADER = `
     attribute vec3 position; attribute vec3 normal; attribute vec2 uv;
     uniform mat4 mvp; uniform mat4 model; uniform float squash;
@@ -1082,13 +1191,20 @@ const HTML: &str = r##"<!DOCTYPE html>
     return out;
   }
 
-  function modelMatrix(yaw, tilt, z) {
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    const cx = Math.cos(tilt), sx = Math.sin(tilt);
-    return mat4([cy, sy * sx, -sy * cx, 0,
-                 0, cx, sx, 0,
-                 sy, -cy * sx, cy * cx, 0,
-                 0, 0, z, 1]);
+  const rotY = (a) => mat4([Math.cos(a), 0, -Math.sin(a), 0, 0, 1, 0, 0,
+                            Math.sin(a), 0, Math.cos(a), 0, 0, 0, 0, 1]);
+  const rotX = (a) => mat4([1, 0, 0, 0, 0, Math.cos(a), Math.sin(a), 0,
+                            0, -Math.sin(a), Math.cos(a), 0, 0, 0, 0, 1]);
+  const rotZ = (a) => mat4([Math.cos(a), Math.sin(a), 0, 0,
+                            -Math.sin(a), Math.cos(a), 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const translateZ = (z) => mat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, z, 1]);
+
+  // Spin first, then pitch, then lean, then push it away from the camera.
+  // Pitch and lean are different things and only one of them looks like a
+  // bottle standing at an angle: pitching about X tips the bottle towards
+  // the camera, so past a few degrees you are looking down its neck.
+  function modelMatrix(yaw, pitch, lean, z) {
+    return multiply(translateZ(z), multiply(rotZ(lean), multiply(rotX(pitch), rotY(yaw))));
   }
 
   function compile(type, source) {
@@ -1166,7 +1282,7 @@ const HTML: &str = r##"<!DOCTYPE html>
 
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const model = modelMatrix(spin, -0.22 + pulse * 0.12, -3.1);
+    const model = modelMatrix(spin, PITCH + pulse * 0.1, LEAN, -3.1);
     const mvp = multiply(perspective(0.72, 152 / 256, 0.1, 12), model);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mvp'), false, mvp);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'model'), false, model);

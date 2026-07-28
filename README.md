@@ -215,6 +215,22 @@ farmhouse, candy pinks over hard black ink, and a diner in yellow and
 orange. No marks, no badges, no characters, no team crests; the names are
 ours.
 
+The treatment on top of those palettes is one direction, applied to all
+five: bootleg mix-cover maximalism — a chrome plaque behind the header with
+a flare and a lightning bolt, speed streaks and blooms in the background,
+scanlines on the screen, a crooked sticker on the glass, rivets in the
+corners, and a glow on whatever is switched on. Every one of those is a
+variable away from being a different skin's, so the palettes stayed put
+while the style moved. The plain grey one keeps the same treatment dialled
+almost to nothing: there is still a skin for people who want a plugin
+rather than a poster.
+
+The rule the decoration obeys: nothing decorative takes a pointer event,
+and nothing decorative sits between the eye and a measurement. The
+scanlines run at the alpha where you feel them and cannot read them, and
+the sticker sits in the top-left corner of the display, which is the one
+region a duck curve never occupies.
+
 ### 3D in the editor, and what it costs
 
 The default skin's mascot is a real mesh: a lathed bottle in raw WebGL,

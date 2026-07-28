@@ -16,6 +16,22 @@ correctness work documented below.
 
 ## Architecture
 
+```
+framework/   seco-core, seco-clap, seco-dsp — the framework, no plugin in it
+plugins/     zape — and whatever comes next
+xtask/       build tasks for any plugin in the tree
+```
+
+One repository and one cargo workspace, deliberately. The boundary that
+matters already exists in the crates — `seco-core` does not know CLAP
+exists, `seco-clap` does not know Zape exists — and separate repositories
+would not add to it; they would add a rev bump to every change that touches
+both sides, which so far is most of them. The trigger for splitting is
+concrete rather than aesthetic: a second plugin that needs to sit on a
+different framework version than the first. When that happens,
+`git subtree split` carries the history out with the code, which is why the
+history is worth more here than the separation would be.
+
 | Crate | Role | `unsafe` |
 |---|---|---|
 | `seco-core` | Plugin traits and audio types. Zero dependencies, zero FFI. A `Plugin` compiles without knowing any host ABI exists. | `#![forbid(unsafe_code)]` |

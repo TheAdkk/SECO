@@ -16,9 +16,9 @@ vst3 = ["dep:clap-wrapper"]
 gui = ["seco-clap/gui"]
 
 [dependencies]
-seco-core = { path = "../../seco-core" }
-seco-clap = { path = "../../seco-clap" }
-seco-dsp = { path = "../../seco-dsp" }
+seco-core = { path = "../../framework/seco-core" }
+seco-clap = { path = "../../framework/seco-clap" }
+seco-dsp = { path = "../../framework/seco-dsp" }
 clap-wrapper = { version = "0.3.1", default-features = false, features = [
     "vst3",
 ], optional = true }

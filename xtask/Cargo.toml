@@ -8,4 +8,4 @@ publish = false
 [dependencies]
 # Only for the CLAP ABI mirrors: xtask reads the built plugin's own
 # descriptor instead of being told what the plugin is called.
-seco-clap = { path = "../seco-clap" }
+seco-clap = { path = "../framework/seco-clap" }

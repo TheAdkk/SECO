@@ -74,6 +74,18 @@ impl DuckShape {
         }
     }
 
+    /// A single-dip shape from an arbitrary recovery — the escape hatch for
+    /// a curve that is not one of the shipped ones (a user-drawn one, say).
+    ///
+    /// The recovery is read as-is; the only thing that keeps such a shape
+    /// honest is `recovery(0.0) == 0.0`, which is what puts the floor on the
+    /// beat. A caller that cannot guarantee that must pin it — see
+    /// `every_shape_is_down_on_the_beat` for what a curve that starts high
+    /// does at the cycle boundary.
+    pub fn from_recovery(recovery: CurveTable) -> Self {
+        Self { recovery, dips: &[0.0] }
+    }
+
     /// The dip positions, for callers that need to draw or analyze them.
     pub fn dips(&self) -> &'static [f32] {
         self.dips
@@ -352,6 +364,18 @@ mod tests {
                 assert!(apart > 0.05, "{} and {} are the same shape", NAMES[i], NAMES[j]);
             }
         }
+    }
+
+    /// A hand-built shape behaves like a shipped one: same seam, same
+    /// bound. Whatever a plugin builds at runtime goes through the same
+    /// `gain()`, so the guarantees are structural rather than per-shape.
+    #[test]
+    fn a_custom_recovery_is_a_shape_like_any_other() {
+        let ramp = DuckShape::from_recovery(CurveTable::from_fn(|t| t));
+        assert!(ramp.gain(0.0, ATTACK) < 1e-4, "the floor must land on the beat");
+        let before = ramp.gain(0.999_99, ATTACK);
+        assert!(before < 1e-2, "the seam must close at the floor, got {before}");
+        assert_eq!(ramp.dips(), &[0.0]);
     }
 
     /// A fade wider than the segment would erase the shape instead of

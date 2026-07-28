@@ -38,8 +38,8 @@ and version are written.
 Tempo-synced ducking ("ghost kick"): `gain = curve(phase)` where `phase` is
 the host's beat position folded into a cycle. Four parameters: **Rate**
 (1/1 … 1/16), **Mix**, **Curve** (15 shapes: single dips of varying
-recovery, gated holds, and 2/3/4-per-cycle patterns), **Bypass**. Every
-shape puts its floor exactly on the beat and closes the cycle seam at the
+recovery, gated holds, and 2/3/4-per-cycle patterns), **Bypass**. Fifteen shapes ship and the sixteenth is drawn in the editor.
+Every shape puts its floor exactly on the beat and closes the cycle seam at the
 floor, by construction — see the click saga below for why that sentence is
 the whole design. Edge
 cases are handled from evidence, not guesses: hosts freeze the beat position
@@ -136,6 +136,24 @@ that call the DAW would let the user close the session and lose the edit.
 The wire protocol lives in `instance::gui_queue` rather than beside the
 WebKit plumbing, so it is tested on every platform and not only where the
 editor compiles.
+
+Zape's drawn curve is what all of that carries: sixteen control points as
+comma-separated text (`custom.rs`), which survive a session file, parse on
+the audio thread without allocating, and are what the editor actually drags.
+A sampled 257-point table would be none of those things.
+
+Its seam is enforced, not requested. The first point is the beat and the
+beat is silent, so the editor draws that handle hollow and refuses to move
+it — and `parse` pins it to zero anyway, because a state block is just bytes
+that may come from an older build or a hand-edited project file. A curve
+starting at 0.8 would step the gain at every cycle boundary; the slew
+limiter would ramp it rather than click, but the duck would not be a duck.
+Everything unreadable — junk, wrong length, invalid UTF-8 — reads as the
+default curve: a session that cannot be understood must still play.
+
+The page samples the drawn curve with the plugin's own interpolation *and*
+its dip-entry fade, so the line under the handles is the gain the audio
+gets, not an illustration of it.
 
 ### The unsafe audit (two real UB holes)
 

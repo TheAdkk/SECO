@@ -6,16 +6,36 @@
 //! ppq when stopped, uninterpolated loop jumps) are documented with evidence
 //! in docs/clap-notes.md §1.5 and §11.
 
+mod custom;
 mod editor;
 
 use seco_clap::seco_export;
 use seco_core::{AudioBuffer, EditorPage, ParamDesc, ParamRange, Plugin, RtContext};
+use custom::CustomCurve;
 use seco_dsp::{DuckShape, Slew, duck};
 
 const PARAM_RATE: usize = 0;
 const PARAM_MIX: usize = 1;
 const PARAM_CURVE: usize = 2;
 const PARAM_BYPASS: usize = 3;
+
+/// The `Curve` parameter's labels: everything seco-dsp ships, plus the
+/// drawn one. Built from `duck::NAMES` at compile time so the two lists
+/// cannot drift; the drawn curve is last, keeping the shipped indices — and
+/// therefore saved sessions — untouched.
+const CURVE_LABELS: [&str; duck::COUNT + 1] = {
+    let mut labels = [""; duck::COUNT + 1];
+    let mut index = 0;
+    while index < duck::COUNT {
+        labels[index] = duck::NAMES[index];
+        index += 1;
+    }
+    labels[duck::COUNT] = "Custom";
+    labels
+};
+
+/// Index of the drawn curve in [`CURVE_LABELS`].
+const CUSTOM_CURVE: usize = duck::COUNT;
 
 /// Duck cycle length in beats per `Rate` step. Beats are quarter notes —
 /// verified empirically (docs/clap-notes.md §1.5) — so "1/1" is one whole
@@ -57,6 +77,10 @@ struct Zape {
     /// state snaps — transport jumps keep their glide.
     needs_snap: bool,
     curves: [DuckShape; duck::COUNT],
+    /// The drawn curve, and the shape sampled from it. Rebuilt only when a
+    /// state block arrives, never per block.
+    custom: CustomCurve,
+    custom_shape: DuckShape,
     /// Per-block gain, computed once and applied to every channel.
     /// Allocated in `activate` (where `max_frames` is known); `process`
     /// never allocates.
@@ -94,15 +118,15 @@ impl Plugin for Zape {
             name: "Curve",
             // Names and tables both come from seco-dsp, in one order: the
             // stored value is the index, so the list is append-only.
-            range: ParamRange::Stepped { labels: duck::NAMES, default: 0 },
+            range: ParamRange::Stepped { labels: &CURVE_LABELS, default: 0 },
         },
         ParamDesc { name: "Bypass", range: ParamRange::Toggle { default: false, bypass: true } },
     ];
 
     const EDITOR: Option<EditorPage> = Some(editor::PAGE);
 
-    fn editor_script(params: &[f64], _state: &[u8]) -> Option<String> {
-        editor::script(params)
+    fn editor_script(params: &[f64], state: &[u8]) -> Option<String> {
+        editor::script(params, state)
     }
 
     fn new() -> Self {
@@ -112,6 +136,8 @@ impl Plugin for Zape {
             slew: Slew::new(1.0),
             needs_snap: true,
             curves: duck::tables(),
+            custom: CustomCurve::default(),
+            custom_shape: CustomCurve::default().shape(),
             gain: Vec::new(),
         }
     }
@@ -122,6 +148,15 @@ impl Plugin for Zape {
         self.gain.clear();
         self.gain.resize(max_frames as usize, 1.0);
         self.needs_snap = true;
+    }
+
+    fn apply_state(&mut self, state: &[u8], _rt: &RtContext) {
+        // Audio thread: parsing borrows the block and the table is a fixed
+        // array, so nothing here allocates. An unreadable or empty block
+        // reads as the default curve — a session that cannot be understood
+        // must still play.
+        self.custom = CustomCurve::parse(state);
+        self.custom_shape = self.custom.shape();
     }
 
     fn reset(&mut self) {
@@ -141,9 +176,9 @@ impl Plugin for Zape {
         // Mix is a percentage in plain units (what the host and the editor
         // show); the curve blend wants a 0..1 factor.
         let mix = (rt.param(PARAM_MIX).clamp(0.0, 100.0) / 100.0) as f32;
+        let curve = (rt.param(PARAM_CURVE).round().max(0.0) as usize).min(CUSTOM_CURVE);
         let curve =
-            (rt.param(PARAM_CURVE).round().max(0.0) as usize).min(self.curves.len() - 1);
-        let curve = &self.curves[curve];
+            if curve == CUSTOM_CURVE { &self.custom_shape } else { &self.curves[curve] };
         let bypass = rt.param(PARAM_BYPASS) >= 0.5;
 
         // Transport is read once per block: a mid-block tempo change lands
@@ -470,7 +505,9 @@ mod tests {
             // f32, so allow a hair for rounding rather than chase ULPs.
             let bound =
                 (std::f64::consts::PI / 2.0 / (ATTACK_SECONDS * sample_rate)) as f32 * 1.001;
-            for curve in 0..duck::COUNT {
+            // The drawn curve is included: it goes through the same gain()
+            // and must obey the same bound, whatever the user drew.
+            for curve in 0..=CUSTOM_CURVE {
                 let worst =
                     worst_step_at(curve as f64, cycle_beats, rate, tempo, sample_rate);
                 assert!(
@@ -481,6 +518,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The drawn curve is a curve like any other: selected by the same
+    /// parameter, played through the same shape, on the beat.
+    #[test]
+    fn a_drawn_curve_plays_where_the_shipped_ones_do() {
+        let mut plugin = Zape::new();
+        plugin.activate(48_000.0, 512);
+        // Flat at full gain after the beat: the only ducking left is the
+        // dip entry itself, which is what makes the assertions sharp.
+        let block = b"0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1";
+        with_rt_context(transport_at(0.0), &PARAMS_SOFT, |rt| {
+            plugin.apply_state(block, rt);
+        });
+
+        // Rate 1/4, full mix, Custom, bypass off.
+        let params = [2.0, 100.0, CUSTOM_CURVE as f64, 0.0];
+        let on_beat = run_block_with(&mut plugin, &params, 8.0, 64);
+        assert!(on_beat[0] < 0.1, "gain {} at the beat", on_beat[0]);
+
+        // Long enough for the slew limiter to cross from the beat's floor:
+        // the jump to mid-cycle is a discontinuity like any other, ramped at
+        // MAX_GAIN_RATE, so a 64-sample block would still be climbing.
+        let mid = run_block_with(&mut plugin, &params, 8.5, 512);
+        let arrived = *mid.last().unwrap();
+        assert!(arrived > 0.9, "gain {arrived} mid-cycle, the drawn curve is not playing");
+    }
+
+    /// `apply_state` runs on the audio thread. The allocation detector armed
+    /// by `seco_export!` aborts the test binary if parsing the block or
+    /// rebuilding the table touches the heap.
+    #[test]
+    fn applying_a_drawn_curve_never_allocates() {
+        let mut plugin = Zape::new();
+        plugin.activate(48_000.0, 512);
+        // Built out here; inside the runner the detector is armed.
+        let block = custom::CustomCurve::default().to_wire();
+        with_rt_context(transport_at(0.0), &PARAMS_SOFT, |rt| {
+            plugin.apply_state(block.as_bytes(), rt);
+            plugin.apply_state(b"junk", rt);
+            plugin.apply_state(b"", rt);
+        });
     }
 
     /// The complaint that started this: the duck has to be *on* the beat.

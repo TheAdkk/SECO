@@ -1,0 +1,1092 @@
+<meta charset="utf-8">
+<title>Neta — Plan de producto</title>
+<style>
+  @page {
+    size: Letter;
+    margin: 20mm 18mm 18mm 18mm;
+  }
+  @page :first { margin: 0; }
+
+  :root {
+    --ink: #14140f;
+    --muted: #5d5c52;
+    --rule: #d9d6c8;
+    --accent: #c79600;
+    --accent-bg: #fff8dc;
+    --paper: #ffffff;
+  }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--paper);
+    font: 10.5pt/1.55 "Charter", "Iowan Old Style", Georgia, serif;
+    hyphens: auto;
+  }
+
+  /* ---------------------------------------------------------- cover */
+  .cover {
+    height: 279.4mm;
+    box-sizing: border-box;
+    padding: 46mm 22mm 20mm;
+    background: #14140f;
+    color: #f4f1e4;
+    page-break-after: always;
+    position: relative;
+    overflow: hidden;
+  }
+  .cover::after {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 14% 16%, #ffd40022 0 3px, transparent 4px),
+      radial-gradient(60% 40% at 88% 8%, #ffd40018, transparent 70%),
+      repeating-linear-gradient(72deg, #ffffff08 0 2px, transparent 2px 54px);
+    pointer-events: none;
+  }
+  .cover * { position: relative; z-index: 1; }
+  .brandline {
+    font: 800 10pt/1 "Avenir Next", "Futura", sans-serif;
+    letter-spacing: .34em;
+    color: #ffd400;
+    text-transform: uppercase;
+  }
+  .cover h1 {
+    font: 900 84pt/0.86 "Avenir Next", "Futura", sans-serif;
+    letter-spacing: -.02em;
+    margin: 8mm 0 0;
+    color: #ffd400;
+  }
+  .cover .tagline {
+    font: 400 15pt/1.35 "Charter", Georgia, serif;
+    max-width: 118mm;
+    margin: 7mm 0 0;
+    color: #efeadb;
+  }
+  .cover .kicker {
+    font: 400 11pt/1.5 "Charter", Georgia, serif;
+    color: #b5b0a1;
+    margin-top: 3mm;
+    max-width: 118mm;
+  }
+  .cover .meta {
+    position: absolute;
+    left: 22mm; right: 22mm; bottom: 20mm;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    border-top: 1.5pt solid #ffd40055;
+    padding-top: 5mm;
+    font: 600 9pt/1.5 "Avenir Next", sans-serif;
+    letter-spacing: .08em;
+    color: #cfcabb;
+    text-transform: uppercase;
+  }
+
+  /* --------------------------------------------------------- headings */
+  h2 {
+    font: 800 19pt/1.15 "Avenir Next", "Futura", sans-serif;
+    letter-spacing: -.01em;
+    margin: 0 0 4mm;
+    padding-bottom: 2mm;
+    border-bottom: 2pt solid var(--ink);
+    page-break-after: avoid;
+  }
+  h2 .num {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    margin-right: 3mm;
+  }
+  h3 {
+    font: 800 12pt/1.3 "Avenir Next", sans-serif;
+    margin: 7mm 0 2mm;
+    page-break-after: avoid;
+  }
+  h4 {
+    font: 700 10.5pt/1.3 "Avenir Next", sans-serif;
+    margin: 5mm 0 1.5mm;
+    color: var(--muted);
+    page-break-after: avoid;
+  }
+  section { page-break-before: always; }
+  section.cont { page-break-before: auto; }
+  p { margin: 0 0 3mm; }
+  strong { font-weight: 700; }
+  em { font-style: italic; }
+
+  /* ------------------------------------------------------------ bits */
+  .lede {
+    font: 400 12pt/1.5 "Charter", Georgia, serif;
+    color: #2c2b22;
+    border-left: 3pt solid var(--accent);
+    padding-left: 5mm;
+    margin: 0 0 6mm;
+  }
+  ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+  li { margin-bottom: 1.4mm; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 3mm 0 5mm;
+    font: 400 9pt/1.4 "Charter", Georgia, serif;
+    page-break-inside: avoid;
+  }
+  th {
+    text-align: left;
+    font: 700 8pt/1.3 "Avenir Next", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    border-bottom: 1.5pt solid var(--ink);
+    padding: 1.5mm 2mm;
+  }
+  td { padding: 1.6mm 2mm; border-bottom: .5pt solid var(--rule); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  code, .mono {
+    font: 8.5pt/1.4 "SF Mono", "Menlo", monospace;
+    background: #f3f1e6;
+    padding: .3mm 1mm;
+    border-radius: 1mm;
+  }
+  pre {
+    font: 8.5pt/1.45 "SF Mono", "Menlo", monospace;
+    background: #14140f;
+    color: #f0ecdd;
+    padding: 4mm 5mm;
+    border-radius: 2mm;
+    overflow: hidden;
+    margin: 3mm 0 5mm;
+    page-break-inside: avoid;
+  }
+  pre .c { color: #ffd400; }
+  .note {
+    background: var(--accent-bg);
+    border: 1pt solid #e8d89a;
+    border-left: 3pt solid var(--accent);
+    padding: 3.5mm 5mm;
+    margin: 4mm 0 5mm;
+    page-break-inside: avoid;
+  }
+  .note h4 { margin: 0 0 1.5mm; color: #7a5c00; }
+  .note p:last-child { margin-bottom: 0; }
+  .warn { background: #fff1ee; border-color: #f0c4b8; border-left-color: #c0492b; }
+  .warn h4 { color: #a03a20; }
+  .phase {
+    border: 1pt solid var(--rule);
+    border-left: 4pt solid var(--accent);
+    padding: 4mm 5mm;
+    margin: 0 0 4mm;
+    page-break-inside: avoid;
+  }
+  .phase h3 { margin-top: 0; }
+  .phase .done {
+    font: 700 8pt/1.4 "Avenir Next", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--accent);
+    margin-top: 2.5mm;
+  }
+  .tag {
+    display: inline-block;
+    font: 700 7.5pt/1 "Avenir Next", sans-serif;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 1mm 2mm;
+    border-radius: 1mm;
+    background: #14140f;
+    color: #ffd400;
+    vertical-align: 1px;
+  }
+  .tag.p1 { background: #6b6a5c; color: #fff; }
+  .tag.p2 { background: #b8b5a5; color: #14140f; }
+  .toc { columns: 2; column-gap: 10mm; font-size: 10pt; }
+  .toc div { break-inside: avoid; margin-bottom: 1.6mm; }
+  .toc .n { color: var(--accent); font-weight: 700; display: inline-block; width: 7mm; }
+  .foot {
+    margin-top: 8mm; padding-top: 3mm;
+    border-top: .5pt solid var(--rule);
+    font: 8.5pt/1.5 "Charter", Georgia, serif;
+    color: var(--muted);
+  }
+</style>
+
+<div class="cover">
+  <div class="brandline">SECO · Documento de producto</div>
+  <h1>NETA</h1>
+  <div class="tagline">
+    Un medidor de loudness, un osciloscopio siempre encendido y un
+    visualizador reactivo. Tres cosas que hoy se compran por separado,
+    en una sola compra de 10 USD.
+  </div>
+  <div class="kicker">
+    <em>La neta</em> es la verdad. Ese es el producto entero: qué mide tu
+    audio de verdad, y cómo se ve de verdad, sin salir de la pantalla.
+  </div>
+  <div class="meta">
+    <div>Versión 1 · 28 julio 2026</div>
+    <div>macOS &amp; Windows primero · Linux si se puede</div>
+  </div>
+</div>
+
+<section class="cont">
+  <h2><span class="num">00</span>Qué vas a leer</h2>
+  <div class="toc">
+    <div><span class="n">01</span>Resumen y posicionamiento</div>
+    <div><span class="n">02</span>Para quién es</div>
+    <div><span class="n">03</span>Cuarto 1 — Medidor</div>
+    <div><span class="n">04</span>Cuarto 2 — Scope</div>
+    <div><span class="n">05</span>Cuarto 3 — Visuales</div>
+    <div><span class="n">06</span>Arquitectura</div>
+    <div><span class="n">07</span>De dónde sale el audio</div>
+    <div><span class="n">08</span>El renderer</div>
+    <div><span class="n">09</span>Dalia</div>
+    <div><span class="n">10</span>Lo que el framework debe</div>
+    <div><span class="n">11</span>Plataformas</div>
+    <div><span class="n">12</span>Fases de trabajo</div>
+    <div><span class="n">13</span>Negocio</div>
+    <div><span class="n">14</span>Riesgos</div>
+    <div><span class="n">15</span>Lo que no vamos a hacer</div>
+  </div>
+
+  <h3>Cómo leerlo</h3>
+  <p>
+    Las etiquetas <span class="tag">P0</span> marcan lo que tiene que existir
+    para que el producto sea el producto. <span class="tag p1">P1</span> es lo
+    que lo hace competitivo. <span class="tag p2">P2</span> es lo que lo hace
+    presumible. Nada marcado P0 se negocia; todo lo demás sí.
+  </p>
+  <p>
+    Este documento se genera de <code>docs/neta/plan.html</code>. La versión
+    en markdown que leen los agentes está en <code>docs/neta/PLAN.md</code>.
+  </p>
+</section>
+
+<section>
+  <h2><span class="num">01</span>Resumen y posicionamiento</h2>
+  <p class="lede">
+    Neta es un solo programa con tres cuartos: los números que exige una
+    entrega profesional, el osciloscopio que dejas abierto todo el día, y
+    los visuales que grabas para subir. Corre como plugin dentro de tu DAW
+    y como aplicación suelta escuchando la computadora entera.
+  </p>
+
+  <h3>Contra qué compite</h3>
+  <table>
+    <tr><th>Qué hace</th><th>Referencia</th><th>Precio</th><th>Qué le falta</th></tr>
+    <tr>
+      <td>Medidor de loudness de norma</td>
+      <td>Youlean Loudness Meter 2</td>
+      <td>Gratis / 30 USD Pro</td>
+      <td>No es osciloscopio ni visualizador. Vive dentro del DAW.</td>
+    </tr>
+    <tr>
+      <td>Osciloscopio siempre encendido</td>
+      <td>MiniMeters</td>
+      <td>20 USD</td>
+      <td>No mide loudness con gating de norma. Sin visuales.</td>
+    </tr>
+    <tr>
+      <td>Visualizador reactivo</td>
+      <td>Astro Visuals</td>
+      <td>15 USD</td>
+      <td>No mide nada. Es adorno, no herramienta.</td>
+    </tr>
+    <tr>
+      <td><strong>Los tres</strong></td>
+      <td><strong>Neta</strong></td>
+      <td><strong>10 USD</strong></td>
+      <td>Existe este documento y no el producto. Todavía.</td>
+    </tr>
+  </table>
+
+  <h3>Por qué esto se puede hacer y no es una fantasía</h3>
+  <ul>
+    <li>
+      <strong>El framework ya existe y ya cargó dos plugins.</strong> SECO
+      corre en CLAP y VST3, en macOS y —compilado y verificado— Windows y
+      Linux. Zape es la prueba de que un plugin completo sale de ahí.
+    </li>
+    <li>
+      <strong>El motor de visuales ya existe.</strong> Dalia son 3,193
+      líneas de Rust con FFT, cromagrama, BPM, fase de beat, detección de
+      transientes y 20 presets de geometría procedural. Y —esto es lo
+      importante— <em>no depende del navegador</em>. Ver §09.
+    </li>
+    <li>
+      <strong>La medición está especificada, no inventada.</strong>
+      ITU-R BS.1770-4 y EBU R128 dicen exactamente qué calcular, y la EBU
+      publica señales de prueba con la lectura que cada una debe dar. No hay
+      que adivinar si el medidor está bien: hay examen.
+    </li>
+    <li>
+      <strong>Controlamos el renderer.</strong> Es la única razón por la que
+      podemos prometer que consume poco — y solo si lo elegimos por eso.
+      Ver §08.
+    </li>
+  </ul>
+
+  <div class="note">
+    <h4>La apuesta en una línea</h4>
+    <p>
+      Nadie vende los tres juntos. Quien quiere las tres cosas hoy paga
+      45 USD y aprende tres interfaces. Neta cobra 10 y enseña una.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">02</span>Para quién es</h2>
+
+  <h3>El productor en casa</h3>
+  <p>
+    Termina un track a las 2 de la mañana, lo sube a Spotify y suena más
+    bajo que todo lo demás. No sabe por qué. Necesita ver
+    <strong>−14 LUFS integrado</strong> y entender que ahí está el problema,
+    sin leer un manual de broadcast. Neta le da el número, el objetivo, y
+    la barra que dice cuánto le falta.
+  </p>
+
+  <h3>El que masteriza</h3>
+  <p>
+    Necesita LUFS integrado con gating correcto, true peak con
+    sobremuestreo, rango de loudness, y poder <strong>demostrar</strong> que
+    la entrega cumple. Para él la palabra clave es <em>verificable</em>: si
+    el medidor no puede citar su resultado contra las señales de la EBU, no
+    lo va a usar para entregar.
+  </p>
+
+  <h3>El VJ y el que hace contenido</h3>
+  <p>
+    Quiere que la pantalla se mueva con la música y quiere grabarlo. Le
+    importa que se vea distinto a lo que ya usan todos, que corra sin
+    tronarle la compu mientras graba, y poder meter su propio logo en 3D.
+  </p>
+
+  <h3>El streamer y el podcaster</h3>
+  <p>
+    Necesita ver el nivel de todo el sistema —no de una pista— mientras
+    hace otra cosa. Ventana chica, siempre encima, que no se coma la
+    batería. Ese es el caso de MiniMeters y el que exige la aplicación
+    suelta con captura del sistema.
+  </p>
+
+  <div class="note">
+    <h4>Lo que estos cuatro tienen en común</h4>
+    <p>
+      Ninguno quiere abrir tres programas. El productor quiere ver el
+      espectro cuando el número le dice que algo está mal; el VJ quiere
+      saber si está clipeando mientras graba. La integración no es un
+      capricho de empaque: es la razón del producto.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">03</span>Cuarto 1 — Medidor</h2>
+  <p class="lede">
+    Los números, y los números tienen que estar bien. Este cuarto es el que
+    le gana el nombre al producto: si Neta miente, se llama mal.
+  </p>
+
+  <h3>Qué se muestra <span class="tag">P0</span></h3>
+  <table>
+    <tr><th>Lectura</th><th>Ventana</th><th>Para qué sirve</th></tr>
+    <tr><td>Momentary (M)</td><td>400 ms</td><td>Qué tan fuerte suena <em>ahorita</em></td></tr>
+    <tr><td>Short-term (S)</td><td>3 s</td><td>Qué tan fuerte suena esta sección</td></tr>
+    <tr><td>Integrated (I)</td><td>Todo el programa</td><td>El número de entrega</td></tr>
+    <tr><td>True Peak</td><td>Instantáneo</td><td>Lo que hará el convertidor entre muestras</td></tr>
+    <tr><td>Loudness Range (LRA)</td><td>Histórico</td><td>Cuánta dinámica queda</td></tr>
+    <tr><td>PSR / PLR</td><td>Corto / programa</td><td>Qué tan aplastado está</td></tr>
+    <tr><td>Sample peak y RMS</td><td>Por canal</td><td>Lo clásico, por costumbre</td></tr>
+  </table>
+
+  <h3>La cadena de medición, paso por paso</h3>
+  <p>
+    Esto no se diseña, se transcribe de la norma. BS.1770-4 define:
+  </p>
+  <ol>
+    <li>
+      <strong>Filtro K, etapa 1</strong> — un shelf alto que aproxima el
+      efecto de la cabeza sobre el campo sonoro. Biquad, coeficientes
+      tabulados en la norma.
+    </li>
+    <li>
+      <strong>Filtro K, etapa 2</strong> — un paso altos alrededor de 38 Hz
+      (curva RLB), que quita el retumbe que el oído no pesa igual.
+    </li>
+    <li>
+      <strong>Media cuadrática</strong> por canal sobre la ventana.
+    </li>
+    <li>
+      <strong>Suma ponderada por canal</strong> — L y R a 1.0, surround a
+      1.41. Estéreo hoy; el peso importa el día que haya multicanal.
+    </li>
+    <li>
+      <strong>Conversión a LKFS/LUFS</strong> — <code>−0.691 + 10·log₁₀(Σ)</code>.
+    </li>
+    <li>
+      <strong>Gating de R128</strong> para el integrado — bloques de 400 ms
+      con 75% de solapamiento, se tiran los que están bajo <strong>−70
+      LUFS</strong> (puerta absoluta), se calcula el nivel con los que
+      quedan, y se tiran otra vez los que están <strong>10 LU</strong> abajo
+      de ese nivel (puerta relativa). El silencio entre canciones no cuenta
+      como música baja.
+    </li>
+  </ol>
+  <p>
+    <strong>True peak</strong> es otra cosa y es donde muchos medidores
+    mienten por omisión: el pico de muestra no dice nada de lo que pasa
+    <em>entre</em> muestras. La norma pide sobremuestreo de al menos 4× antes
+    de tomar el pico. Sin eso, un track que marca −0.1 dBFS puede clipear el
+    convertidor del oyente y el medidor nunca lo dijo.
+  </p>
+
+  <h3>Cómo se comprueba que está bien <span class="tag">P0</span></h3>
+  <p>
+    La EBU publica <strong>Tech 3341</strong>: señales de prueba con la
+    lectura exacta que cada una debe producir y la tolerancia permitida. Cada
+    caso de esa suite se convierte en una función de test.
+  </p>
+  <div class="note">
+    <h4>Regla dura del proyecto</h4>
+    <p>
+      Un medidor que no puede citar su resultado sobre las señales de la EBU
+      te está pidiendo que le creas en vez de que lo verifiques. Esta suite no
+      es objetivo opcional ni “fase 2”: es la definición de terminado de la
+      fase 1.
+    </p>
+  </div>
+
+  <h3>La interfaz <span class="tag p1">P1</span></h3>
+  <ul>
+    <li>
+      <strong>Barra vertical de LUFS</strong> con corchete de objetivo. El
+      corchete se mueve con el destino elegido; nada más cambia.
+    </li>
+    <li>
+      <strong>Histograma</strong> de distribución de loudness — dónde vive
+      el track, no solo dónde termina.
+    </li>
+    <li>
+      <strong>Gráfica de tiempo</strong> con la traza short-term encima del
+      área del integrado, y marcas de <em>true peak overs</em> en la
+      línea de tiempo.
+    </li>
+    <li>
+      <strong>Objetivos como preset</strong>: Spotify −14, YouTube −14, Apple
+      Music −16, Amazon −14, broadcast EBU R128 −23, club/DJ. Cada uno con
+      su techo de true peak.
+    </li>
+    <li>
+      <strong>Comparación A/B</strong> de dos corridas de medición.
+    </li>
+  </ul>
+
+  <h3>Salidas <span class="tag p2">P2</span></h3>
+  <ul>
+    <li>Reporte de la sesión en CSV y PNG, para el papeleo de entrega.</li>
+    <li>Vista previa de normalización: “esto es lo que Spotify le va a hacer”.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">04</span>Cuarto 2 — Scope</h2>
+  <p class="lede">
+    Siempre encendido, siempre legible, y barato de dejar abierto. Este
+    cuarto compite directamente con MiniMeters, y compite en consumo.
+  </p>
+
+  <h3>Qué contiene <span class="tag">P0</span></h3>
+  <table>
+    <tr><th>Panel</th><th>Qué muestra</th><th>Detalle que importa</th></tr>
+    <tr>
+      <td>Analizador de espectro</td>
+      <td>Energía por frecuencia, escala logarítmica</td>
+      <td>Balística configurable: pico, RMS, tiempo de caída</td>
+    </tr>
+    <tr>
+      <td>Espectrograma</td>
+      <td>La cascada de tiempo contra frecuencia</td>
+      <td>Es el panel que más CPU cuesta; se dibuja en GPU o no se dibuja</td>
+    </tr>
+    <tr>
+      <td>Osciloscopio</td>
+      <td>La forma de onda instantánea</td>
+      <td>Con disparo, o se ve como ruido</td>
+    </tr>
+    <tr>
+      <td>Goniómetro / vectorscopio</td>
+      <td>Relación entre canales</td>
+      <td>Lo que delata un problema de fase antes que el oído</td>
+    </tr>
+    <tr>
+      <td>Correlación</td>
+      <td>−1 a +1</td>
+      <td>El número que dice si va a sobrevivir en mono</td>
+    </tr>
+    <tr>
+      <td>Ancho estéreo y M/S</td>
+      <td>Balance mid/side</td>
+      <td></td>
+    </tr>
+  </table>
+
+  <h3>Detalles de uso <span class="tag p1">P1</span></h3>
+  <ul>
+    <li>
+      <strong>Lectura bajo el cursor</strong>: frecuencia, nota y desviación
+      en cents — <code>86.64 Hz | F2 | −13 cents</code>. Convierte el
+      analizador en afinador de bombos.
+    </li>
+    <li><strong>Peak hold</strong>, congelar, y buffer de historia con scroll.</li>
+    <li>
+      <strong>Sobrevivir a 200 px de alto</strong> en un segundo monitor. El
+      layout tiene que degradar bien, no romperse: es como se usa de verdad.
+    </li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">05</span>Cuarto 3 — Visuales</h2>
+  <p class="lede">
+    Donde el producto deja de ser herramienta y se vuelve algo que la gente
+    presume. También es la razón por la que alguien elige Neta sobre un
+    medidor gratis.
+  </p>
+
+  <h3>El motor <span class="tag">P0</span></h3>
+  <ul>
+    <li>Los <strong>20 presets procedurales de Dalia</strong>, manejados por su propio análisis.</li>
+    <li><strong>Color armónico</strong> derivado del cromagrama: la tonalidad detectada define la paleta.</li>
+    <li><strong>Cambio de preset amarrado al beat</strong>, con el controlador de mashup que Dalia ya tiene, incluyendo predicción de drop y sostenido de graves.</li>
+  </ul>
+
+  <h3>El cuarto 3D <span class="tag p1">P1</span></h3>
+  <p>
+    Importas tu propio modelo y lo pones a girar con la música. La
+    maquinaria ya existe y ya se envía: Zape trae una caguama torneada en
+    WebGL, girando, acelerada por el parámetro Mix y cabeceando con el beat.
+    Esto es lo mismo, con la malla cargada en vez de generada.
+  </p>
+  <table>
+    <tr><th>Formato</th><th>Veredicto</th><th>Por qué</th></tr>
+    <tr>
+      <td><code>.obj</code></td>
+      <td>Primero</td>
+      <td>Es texto. El parser son ~60 líneas y no depende de nadie.</td>
+    </tr>
+    <tr>
+      <td><code>.glb</code> / glTF</td>
+      <td>Después, y es lo correcto</td>
+      <td>Binario, un archivo, materiales PBR. El estándar real del 3D en la web y fuera de ella.</td>
+    </tr>
+    <tr>
+      <td><code>.blend</code></td>
+      <td><strong>No</strong></td>
+      <td>Es el volcado de memoria interno de Blender, versionado y sin documentar en la práctica. Lo lee Blender y nada más. Se exporta desde ahí.</td>
+    </tr>
+  </table>
+
+  <h4>Efectos</h4>
+  <ul>
+    <li><strong>Glitch, aberración cromática, bloom, RGB split, datamosh</strong>, todos reactivos al audio. Dalia ya tiene el diseño del pipeline de post-proceso; es port de shaders.</li>
+    <li>
+      <strong>Estética PS2 como opción de primera clase</strong>, no como
+      chiste: texturas sin filtrado, vértices temblorosos, mapeo afín. Es
+      barato, es distintivo y va con la marca.
+    </li>
+  </ul>
+
+  <h3>Sacarlo de la pantalla <span class="tag p2">P2</span></h3>
+  <ul>
+    <li><strong>Captura de video</strong> de los visuales — la razón real por la que la gente compra visualizadores.</li>
+    <li>Pantalla completa y modo segundo monitor.</li>
+    <li>
+      <strong>Compartir presets</strong> como ya funciona la biblioteca de
+      curvas de Zape: un archivo chico por preset, en la carpeta de datos del
+      usuario, que se puede mandar por WhatsApp.
+    </li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">06</span>Arquitectura</h2>
+  <p class="lede">
+    Una sola regla estructural, y todo lo demás se acomoda solo: la medición
+    y los visuales no saben qué es un plugin ni qué es una ventana.
+  </p>
+
+<pre><span class="c">neta-meter</span>     la medición    — sin host, sin ventana, sin formato de plugin
+<span class="c">neta-visual</span>    los visuales   — geometría y shaders, sin ventana
+<span class="c">dalia-core</span>     el análisis    — enlazado nativo (§09)
+      ↑                    ↑
+<span class="c">neta</span> (plugin CLAP/VST3)   <span class="c">neta-app</span> (aplicación suelta)</pre>
+
+  <p>
+    Esa división ya existe en el repositorio: <code>plugins/neta/meter</code>
+    se creó vacía y a propósito. Nada en este plan puede violarla.
+  </p>
+
+  <div class="note">
+    <h4>Por qué esto se decide el día uno y no después</h4>
+    <p>
+      El día que una medición necesite una ventana o una API de plugin para
+      funcionar, la aplicación suelta deja de ser una segunda carcasa y se
+      vuelve una segunda implementación. Hoy cuesta cero. En tres meses
+      cuesta el proyecto.
+    </p>
+  </div>
+
+  <h3>Reglas de tiempo real que se heredan de Zape</h3>
+  <ul>
+    <li>
+      <strong>Cero asignaciones de memoria en el hilo de audio</strong>, y no
+      como promesa: el detector que ya existe aborta el proceso si pasa.
+    </li>
+    <li>
+      <strong>El canal audio → interfaz son atómicos relajados</strong> en un
+      solo sentido. Nada que bloquear, nada que esperar. Ya está probado bajo
+      el detector de carreras de miri.
+    </li>
+    <li>
+      <strong>El estado del plugin viaja en la sesión</strong>, no en disco,
+      con el disco solo como biblioteca. Un proyecto suena igual en otra
+      máquina.
+    </li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">07</span>De dónde sale el audio</h2>
+  <p class="lede">
+    Es la decisión de la que cuelgan todas las demás. Youlean ve un bus;
+    MiniMeters ve el sistema. Neta necesita los dos, y las plataformas no
+    cuestan lo mismo.
+  </p>
+
+  <table>
+    <tr><th>Fuente</th><th>Plataforma</th><th>Dificultad</th><th>Permiso</th></tr>
+    <tr><td>Plugin en una pista o bus</td><td>todas</td><td><strong>Hecho</strong> — el framework existe</td><td>ninguno</td></tr>
+    <tr><td>WASAPI loopback</td><td>Windows</td><td>Fácil, viene en el sistema</td><td>ninguno</td></tr>
+    <tr><td>Core Audio process tap</td><td>macOS 14.4+</td><td>Media</td><td>captura de audio</td></tr>
+    <tr><td>ScreenCaptureKit</td><td>macOS 13+</td><td>Media</td><td><strong>grabación de pantalla</strong></td></tr>
+    <tr><td>Dispositivo virtual (BlackHole)</td><td>macOS &lt; 14.4</td><td>El usuario instala un driver</td><td>ninguno, pero un driver</td></tr>
+    <tr><td>PipeWire / PulseAudio monitor</td><td>Linux</td><td>Fácil</td><td>ninguno</td></tr>
+    <tr><td>Plugin → app por memoria compartida</td><td>todas</td><td>Media</td><td>ninguno</td></tr>
+  </table>
+
+  <h3>Dos cosas que hay que mirar fijo</h3>
+  <p>
+    <strong>Windows es la plataforma fácil aquí</strong>, al revés de lo
+    normal. WASAPI trae captura loopback en el sistema operativo: sin driver,
+    sin diálogo, sin permiso. Linux igual con PipeWire.
+  </p>
+  <p>
+    <strong>macOS es la difícil.</strong> El camino bueno es el
+    <em>process tap</em> de Core Audio (14.4 en adelante), que captura audio
+    del sistema o de una app específica sin instalar driver. Abajo de esa
+    versión queda ScreenCaptureKit — y pedirle a un músico permiso de
+    <em>grabación de pantalla</em> para que un medidor lo escuche es un
+    diálogo horrible de explicar y una razón real por la que alguien
+    desinstala.
+  </p>
+
+  <h3>El puente plugin → app</h3>
+  <p>
+    Un anillo de memoria compartida entre el plugin y la aplicación resuelve
+    dos problemas de un golpe:
+  </p>
+  <ul>
+    <li>
+      Le brinca por completo a los permisos de macOS para quien usa DAW: el
+      plugin <em>ya tiene</em> el audio, solo hay que pasarlo.
+    </li>
+    <li>
+      Es la única forma de medir <strong>una pista</strong> en la ventana
+      flotante. La captura de sistema solo puede ver la mezcla final.
+    </li>
+  </ul>
+  <p>
+    Diseño: buffer circular de tamaño fijo en memoria compartida, un
+    productor (el plugin, desde el hilo de audio, sin asignar ni bloquear) y
+    un consumidor (la app). El mismo patrón que ya se resolvió y se probó
+    bajo miri para el bloque de estado, girado noventa grados.
+  </p>
+</section>
+
+<section>
+  <h2><span class="num">08</span>El renderer</h2>
+  <p class="lede">
+    “El nuestro consume menos” es una afirmación sobre el renderer, y solo
+    es cierta si el renderer se elige por eso.
+  </p>
+
+  <h3>Por qué no es un webview</h3>
+  <p>
+    El editor de Zape es un WKWebView y ahí es la herramienta correcta:
+    ventana chica, 30 Hz, y solo mientras está abierta. Para Neta es la
+    herramienta equivocada. Un medidor repinta <strong>cada cuadro, para
+    siempre, a ventana completa</strong>, y un motor de navegador
+    componiendo eso es exactamente el costo de CPU que este producto viene a
+    quitarle a la competencia.
+  </p>
+
+  <h3>La decisión: wgpu, un solo renderer, las dos carcasas</h3>
+  <ul>
+    <li>Metal en macOS, Direct3D 12 en Windows, Vulkan en Linux — desde el mismo código.</li>
+    <li>El trabajo cae en la GPU, que es donde dibujar un espectro pertenece.</li>
+    <li>Es lo que la aplicación suelta necesita de todos modos, así que escribirlo dos veces se evita en lugar de posponerse.</li>
+  </ul>
+
+  <h3>El precio, dicho de frente</h3>
+  <p>
+    Esto necesita un <strong>camino de editor sin webview en
+    <code>seco-clap</code></strong>: una superficie nativa
+    (<code>NSView</code>, <code>HWND</code>, X11) entregada a wgpu en vez de
+    un navegador. Es el trabajo de ingeniería más grande de este plan y no se
+    esconde en una viñeta. Zape se queda con su webview; los dos caminos
+    conviven detrás de <code>Plugin::EDITOR</code>.
+  </p>
+
+  <div class="note">
+    <h4>Presupuesto, medido y publicado</h4>
+    <p>
+      Menos de <strong>2% de CPU</strong> en una laptop M con la ventana
+      abierta a 60 fps. Cero asignaciones en el hilo de audio. El renderer
+      deja de existir cuando la ventana se cierra, como ya hace el de Zape.
+      Si no se cumple, se dice el número real en vez de callarlo.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">09</span>Dalia no se porta: se enlaza</h2>
+  <p class="lede">
+    El hallazgo que más cambió este plan salió de leer el repositorio, no de
+    suponerlo.
+  </p>
+
+  <p>
+    Dalia es un motor de visualización reactiva en Rust/WASM, 48 commits,
+    con análisis FFT, energía de 7 bandas, cromagrama, BPM y fase de beat,
+    gate de flujo espectral, detección de transientes, pronóstico de energía
+    a futuro, 20 presets de geometría procedural, controlador de mashup y
+    sistema de color armónico.
+  </p>
+
+  <h3>Cuánto navegador tiene realmente</h3>
+<pre>audio.rs         898 líneas   wasm_bindgen: 0   web_sys: 0   js_sys: 0
+geometry.rs      999 líneas   wasm_bindgen: 0   web_sys: 0   js_sys: 0
+color.rs         459 líneas   wasm_bindgen: 0
+presets.rs       198 líneas   wasm_bindgen: 0
+unit_lattice.rs  326 líneas   wasm_bindgen: 0
+mashup.rs         72 líneas   wasm_bindgen: 0
+<span class="c">lib.rs           241 líneas   wasm_bindgen: 4   ← todo el acoplamiento</span></pre>
+
+  <p>
+    <strong>El motor ya es libre de navegador.</strong> Toda la capa WASM son
+    cuatro anotaciones en un archivo. Entonces la integración no es un port:
+  </p>
+  <ol>
+    <li><code>crate-type = ["cdylib", "rlib"]</code> — se conserva el artefacto WASM y se agrega la biblioteca nativa.</li>
+    <li>La superficie <code>wasm_bindgen</code> se mueve detrás de un feature <code>wasm</code> (encendido para la web, apagado para Neta), y <code>wasm-bindgen</code>, <code>js-sys</code> y <code>web-sys</code> pasan a ser dependencias opcionales.</li>
+    <li>Neta depende del crate directamente, nativo. Sin runtime de WASM, sin puente de JavaScript, sin serializar nada entre dos mundos.</li>
+  </ol>
+
+  <h3>Qué pasa y qué no</h3>
+  <p>
+    <strong>Pasa sin tocarse:</strong> todo el análisis y toda la generación
+    de geometría — los vértices ya se calculan en Rust y Three.js solo los
+    dibuja.
+  </p>
+  <p>
+    <strong>No pasa:</strong> el render de Three.js, la cadena de
+    post-proceso y el trabajo de cámara. Eso se vuelve shaders de wgpu, y es
+    el trabajo real del cuarto de visuales — trabajo de shaders, no de
+    lógica.
+  </p>
+
+  <div class="note">
+    <h4>Decisión pendiente del dueño de los dos repos</h4>
+    <p>
+      ¿Dalia sigue siendo producto propio, con su demo en Vercel, y Neta es
+      un segundo consumidor? ¿O se absorbe? Este plan asume lo primero: no
+      cuesta nada y el demo web es material de venta del plugin.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">10</span>Lo que el framework debe</h2>
+  <p class="lede">
+    Zape nunca tocó estos techos. Neta los toca el primer día. Están en orden
+    de qué tanto bloquean.
+  </p>
+
+  <table>
+    <tr><th>#</th><th>Deuda</th><th>Por qué bloquea</th></tr>
+    <tr>
+      <td>1</td>
+      <td><code>audio_ports.rs</code> fija una entrada estéreo y una salida estéreo</td>
+      <td>Un medidor quiere entrada y <em>ninguna</em> salida; uno de mastering quiere más de dos canales. El arreglo es mover la disposición de puertos al trait <code>Plugin</code>.</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>No hay camino de editor por GPU</td>
+      <td><code>seco-clap</code> solo sabe hacer webview. §08 es el argumento completo.</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>El editor es solo macOS</td>
+      <td>Para un producto visual <strong>de paga</strong> eso no es una nota al pie: es Windows entero, que es la mitad del mercado.</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>No se reporta latencia ni cola</td>
+      <td>El medidor no las necesita. Se apunta aquí para que el delay no lo redescubra.</td>
+    </tr>
+  </table>
+
+  <p>
+    <strong>No bloquean:</strong> los parámetros se leen una vez por bloque y
+    no hay eventos con precisión de muestra. A un medidor le da igual.
+  </p>
+</section>
+
+<section>
+  <h2><span class="num">11</span>Plataformas</h2>
+  <p class="lede">
+    macOS y Windows son los principales. Linux se soporta si sale gratis y se
+    dice cuando no salga.
+  </p>
+
+  <table>
+    <tr><th>Capacidad</th><th>macOS</th><th>Windows</th><th>Linux</th></tr>
+    <tr><td>Plugin CLAP</td><td>Listo</td><td>Compila y carga</td><td>Compila</td></tr>
+    <tr><td>Plugin VST3</td><td>Listo</td><td>Compila</td><td>Compila</td></tr>
+    <tr><td>Editor</td><td>Webview hoy · wgpu después</td><td><strong>Falta</strong> — llega con wgpu</td><td>Llega con wgpu</td></tr>
+    <tr><td>App suelta</td><td>Process tap 14.4+</td><td>WASAPI loopback</td><td>PipeWire</td></tr>
+    <tr><td>Instalador</td><td>Zip + script, sin firmar</td><td>Zip + <code>.bat</code>, después Inno Setup</td><td>tar.gz + script</td></tr>
+    <tr><td>Empaquetado en CI</td><td>Listo</td><td>Escrito, sin correr</td><td>Escrito, sin correr</td></tr>
+  </table>
+
+  <div class="warn">
+    <h4>El editor de Windows es el bloqueo más caro del plan</h4>
+    <p>
+      Hoy Neta en Windows cargaría, mediría bien y mostraría el panel
+      genérico de parámetros del host. Para un producto que se vende por
+      cómo se ve, eso es no tener producto. El camino de wgpu de §08 no es
+      una optimización: es lo que hace que Windows exista.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">12</span>Fases de trabajo</h2>
+  <p class="lede">
+    Cada fase termina con algo que corre. Ninguna termina con “la base ya
+    quedó”.
+  </p>
+
+  <div class="phase">
+    <h3>Fase 1 — El medidor está bien</h3>
+    <p>
+      Neta como plugin, midiendo correctamente, dibujado con lo que ya
+      existe. Todo el P0 del cuarto 1. Sin visuales, sin app suelta.
+    </p>
+    <div class="done">Terminado cuando: pasa la suite EBU Tech 3341 dentro de tolerancia, con los números en el reporte de tests.</div>
+  </div>
+
+  <div class="phase">
+    <h3>Fase 2 — El renderer</h3>
+    <p>
+      wgpu en <code>seco-clap</code> detrás de un camino de editor por GPU.
+      Se porta la interfaz del cuarto 1. Aquí nace el editor de Windows.
+    </p>
+    <div class="done">Terminado cuando: el mismo editor corre en macOS y Windows, y el consumo de CPU medido se publica.</div>
+  </div>
+
+  <div class="phase">
+    <h3>Fase 3 — El scope</h3>
+    <p>
+      Cuarto 2 completo. Espectro, espectrograma, osciloscopio, goniómetro,
+      correlación. En este punto Neta ya reemplaza a MiniMeters para quien
+      trabaja en DAW.
+    </p>
+    <div class="done">Terminado cuando: se puede dejar abierto una sesión entera sin notarlo.</div>
+  </div>
+
+  <div class="phase">
+    <h3>Fase 4 — La aplicación suelta</h3>
+    <p>
+      Ventana propia, WASAPI en Windows, process tap en macOS, PipeWire en
+      Linux. Más el anillo compartido plugin → app. Aquí Neta reemplaza a
+      MiniMeters en general.
+    </p>
+    <div class="done">Terminado cuando: mide el audio del sistema en macOS y Windows sin que el usuario instale un driver.</div>
+  </div>
+
+  <div class="phase">
+    <h3>Fase 5 — Dalia</h3>
+    <p>
+      Se enlaza el crate nativo, se portan los shaders de geometría y
+      post-proceso a wgpu, entran los presets, el mashup y el color armónico.
+    </p>
+    <div class="done">Terminado cuando: los 20 presets corren dentro de Neta con el mismo análisis que en el demo web.</div>
+  </div>
+
+  <div class="phase">
+    <h3>Fase 6 — El cuarto 3D</h3>
+    <p>
+      Carga de <code>.obj</code>, después <code>.glb</code>. Tu logo girando,
+      glitcheando y reaccionando. Estética PS2 como opción.
+    </p>
+    <div class="done">Terminado cuando: alguien mete su logo y graba un clip sin ayuda.</div>
+  </div>
+
+  <p>
+    <strong>Fases 1 a 3 ya son un producto vendible.</strong> Las fases 4 a 6
+    son lo que lo hace valer más que un medidor.
+  </p>
+</section>
+
+<section>
+  <h2><span class="num">13</span>Negocio</h2>
+
+  <h3>Precio: 10 USD</h3>
+  <p>
+    Contra MiniMeters en 20 y Astro en 15, ese es todo el posicionamiento — y
+    solo funciona si el producto no se siente como una décima parte. No
+    debería: la medición cumple norma y los visuales son un motor que ya
+    existe.
+  </p>
+
+  <h3>Maquinaria, nada de esto construido todavía</h3>
+  <table>
+    <tr><th>Pieza</th><th>Opción</th><th>Nota</th></tr>
+    <tr>
+      <td>Cobro</td>
+      <td>Lemon Squeezy o Paddle</td>
+      <td>Actúan como <em>merchant of record</em> y manejan IVA/VAT en ventas internacionales. Importa vendiendo desde México a la UE.</td>
+    </tr>
+    <tr>
+      <td></td>
+      <td>Gumroad</td>
+      <td>Más simple, cobra más.</td>
+    </tr>
+    <tr>
+      <td></td>
+      <td>Stripe directo</td>
+      <td>Lo más barato, tú te encargas de impuestos.</td>
+    </tr>
+    <tr>
+      <td>Licencia</td>
+      <td>Llave + activación offline</td>
+      <td>Ligera a propósito. Ver abajo.</td>
+    </tr>
+    <tr>
+      <td>Prueba</td>
+      <td>Completa con recordatorio o límite de sesión</td>
+      <td>Nunca capada de funciones: los visuales <em>son</em> el demo.</td>
+    </tr>
+  </table>
+
+  <p>
+    A 10 USD, las comisiones se comen entre 5 y 10%. Y el DRM agresivo
+    cuesta más en tickets de soporte y falsos positivos de lo que recupera:
+    quien iba a piratear un plugin de 10 dólares nunca lo iba a comprar.
+  </p>
+
+  <h3>Gratis contra pagado</h3>
+  <p>
+    Zape es gratis para siempre — un plugin de ducking que cobra es un plugin
+    que nadie instala. Para Neta hay una división que vale la pena decidir
+    <em>antes</em> del lanzamiento: <strong>medidores gratis, visuales
+    pagados</strong>. Eso convierte el nivel gratuito en un competidor real
+    de Youlean y el pagado en la parte divertida.
+  </p>
+
+  <div class="warn">
+    <h4>La colisión que sí duele</h4>
+    <p>
+      Una app <strong>de paga</strong> en macOS que pide permiso de captura
+      de audio estando sin firmar es un problema de conversión. Para un
+      plugin gratis la advertencia de Gatekeeper es una molestia y el Read Me
+      la explica. Para una compra de 10 dólares, que el sistema operativo te
+      diga que el software es de un desarrollador no identificado —justo
+      antes de pedir escuchar tu computadora— es donde la gente cierra la
+      ventana y pide reembolso.
+    </p>
+    <p>
+      El Developer ID de Apple cuesta 99 USD al año. <strong>Son diez
+      ventas.</strong> Para Zape nunca tuvo sentido; para un producto de paga
+      es costo de operación. El equivalente en Windows —certificado de firma
+      de código para el instalador— cuesta entre 200 y 400 al año y puede
+      esperar: SmartScreen sobre un instalador se sobrevive de una forma en
+      que un permiso sobre una app de audio sin firmar no.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">14</span>Riesgos</h2>
+  <table>
+    <tr><th>Riesgo</th><th>Qué tan probable</th><th>Qué hacemos</th></tr>
+    <tr>
+      <td>El editor por GPU en <code>seco-clap</code> resulta más grande de lo estimado</td>
+      <td>Alta</td>
+      <td>Es el ítem más grande y está dicho. Se puede acotar: primero solo macOS con Metal por wgpu, Windows después.</td>
+    </tr>
+    <tr>
+      <td>La medición no pasa Tech 3341 a la primera</td>
+      <td>Alta, y está bien</td>
+      <td>Para eso es la suite. Es la fase 1 completa, no un extra.</td>
+    </tr>
+    <tr>
+      <td>El process tap de macOS pide permisos que espantan</td>
+      <td>Media</td>
+      <td>El puente plugin → app le brinca por completo para quien usa DAW.</td>
+    </tr>
+    <tr>
+      <td>Sin firmar, la conversión de una app de paga se cae</td>
+      <td>Media-alta</td>
+      <td>99 USD al año. Diez ventas. Decisión de negocio, no técnica.</td>
+    </tr>
+    <tr>
+      <td>Portar el post-proceso de Three.js a wgpu toma más de lo pensado</td>
+      <td>Media</td>
+      <td>Fase 5 va después de que el producto ya se vende. Se puede lanzar sin ella.</td>
+    </tr>
+    <tr>
+      <td>Alcance: tres productos en uno es mucho</td>
+      <td>Alta</td>
+      <td>Las fases 1–3 son un producto completo. Si se acaba el aire, ahí se para y se vende.</td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="num">15</span>Lo que no vamos a hacer</h2>
+  <ul>
+    <li><strong>Importar <code>.blend</code>.</strong> Se exporta a <code>.obj</code> o <code>.glb</code>.</li>
+    <li><strong>Codificar video dentro del plugin.</strong> Captura de pantalla de los visuales es suficiente; un pipeline de export es otro producto.</li>
+    <li><strong>DRM agresivo.</strong> Ver §13.</li>
+    <li><strong>Compilar cruzado desde una máquina a tres.</strong> CI ya presta las otras dos.</li>
+    <li>
+      <strong>Ganarle a MiniMeters en cantidad de medidores en la versión 1.</strong>
+      Tiene años de medidores chiquitos. Neta gana porque los tres cuartos son
+      una sola compra, no por tener todos los medidores que existen.
+    </li>
+  </ul>
+
+  <div class="foot">
+    <p>
+      <strong>Neta</strong> — documento de producto v1, 28 de julio de 2026.
+      Generado desde <code>docs/neta/plan.html</code>. La versión que leen los
+      agentes de código está en <code>docs/neta/PLAN.md</code>; las dos se
+      actualizan juntas.
+    </p>
+    <p>
+      SECO · <em>Sistema Extensible de Componentes de audiO</em>. Zape es
+      gratis y lo seguirá siendo.
+    </p>
+  </div>
+</section>

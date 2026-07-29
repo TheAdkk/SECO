@@ -1,5 +1,12 @@
 # Neta — plan
 
+> The full narrative version, designed for reading and sharing, is
+> `docs/neta/Neta-Plan.pdf`, generated from `docs/neta/plan.html`. This file
+> is the agent-facing one: shorter, and the thing to read before touching
+> code. Where they disagree, the PDF is newer.
+>
+> **Platform priority: macOS and Windows first. Linux where it comes free.**
+
 *La neta* is the truth. The product is one sentence: **what your audio
 actually measures, and what it actually looks like, without leaving the
 screen.**

@@ -5,6 +5,8 @@ members = [
     "framework/seco-clap",
     "framework/seco-dsp",
     "plugins/zape",
+    "plugins/neta",
+    "plugins/neta/meter",
     "xtask",
 ]
 

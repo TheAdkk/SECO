@@ -59,6 +59,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "neta"
+version = "0.1.0"
+dependencies = [
+ "clap-wrapper",
+ "neta-meter",
+ "seco-clap",
+ "seco-core",
+]
+
+[[package]]
+name = "neta-meter"
+version = "0.1.0"
+
+[[package]]
 name = "objc2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

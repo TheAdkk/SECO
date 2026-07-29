@@ -1,0 +1,9 @@
+[package]
+name = "neta-meter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# No dependencies, and no plugin or host in sight: this is the measurement,
+# and the plugin is one of the shells that will wrap it.
+[dependencies]

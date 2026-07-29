@@ -611,7 +611,10 @@ unsafe extern "C" fn plugin_destroy<P: Plugin>(plugin: *const ClapPlugin) {
     // (plugin.h:55-58) and makes no concurrent calls, so re-owning the Box is
     // sound and runs `P`'s Drop.
     let data = unsafe { (*plugin).plugin_data.cast::<Instance<P>>() };
+    #[cfg(debug_assertions)]
     let mut instance = unsafe { Box::from_raw(data) };
+    #[cfg(not(debug_assertions))]
+    let instance = unsafe { Box::from_raw(data) };
     #[cfg(debug_assertions)]
     {
         instance.trace_stop.store(true, Relaxed);

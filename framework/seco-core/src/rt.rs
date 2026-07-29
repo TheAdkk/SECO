@@ -132,7 +132,12 @@ pub fn with_rt_context<R>(
 ) -> R {
     #[cfg(debug_assertions)]
     let _guard = DepthGuard::enter();
-    f(&RtContext { transport, params, scope, _not_send_not_sync: PhantomData })
+    f(&RtContext {
+        transport,
+        params,
+        scope,
+        _not_send_not_sync: PhantomData,
+    })
 }
 
 #[cfg(test)]

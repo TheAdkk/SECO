@@ -38,7 +38,7 @@ impl<'a> AudioBuffer<'a> {
     /// Iterates over the channels as read-only sample slices — for a plugin
     /// that needs to look at the block before changing it (metering, a
     /// picture of the input for its editor).
-    pub fn channels(&self) -> impl Iterator<Item = &[f32]> {
+    pub fn channels(&self) -> impl Clone + ExactSizeIterator<Item = &[f32]> {
         self.channels.iter().map(|channel| &**channel)
     }
 

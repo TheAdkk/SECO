@@ -15,6 +15,7 @@ gui = ["seco-clap/gui"]
 
 [dependencies]
 neta-meter = { path = "meter" }
+neta-visual = { path = "visual" }
 seco-core = { path = "../../framework/seco-core" }
 seco-clap = { path = "../../framework/seco-clap" }
 clap-wrapper = { version = "0.3.1", default-features = false, features = [

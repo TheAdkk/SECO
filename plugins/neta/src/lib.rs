@@ -31,10 +31,14 @@
 
 #![forbid(unsafe_code)]
 
+mod editor;
+mod model;
+mod settings;
+
 use neta_meter::scope::ScopeAnalyzer;
 use neta_meter::{LoudnessMeter, RealtimeMeterSnapshot};
 use seco_clap::seco_export;
-use seco_core::{AudioBuffer, Plugin, RtContext};
+use seco_core::{AudioBuffer, EditorPage, Plugin, RtContext};
 
 /// Sentinel for a gated value the programme has not produced yet.
 ///
@@ -73,6 +77,7 @@ impl Plugin for Neta {
     const VENDOR: &'static str = "SECO";
     const VERSION: &'static str = "0.1.0";
     const DESCRIPTION: &'static str = "Loudness meter";
+    const EDITOR: Option<EditorPage> = Some(editor::PAGE);
 
     // A meter has nothing to automate yet. `PARAMS` defaults to empty, and
     // the adapter reports zero parameters rather than inventing one.
@@ -131,6 +136,25 @@ impl Plugin for Neta {
             );
             publish_picture(rt, meter_snapshot, scope);
         }
+    }
+
+    fn editor_frame(scope: &[f32]) -> Option<String> {
+        editor::frame(scope)
+    }
+
+    /// Hands the page back the layout the session was saved with. The block
+    /// is the editor's own; the audio thread never reads it, which is why
+    /// `apply_state` stays the default no-op — hiding the waveform does not
+    /// change what the meter measures.
+    fn editor_script(_params: &[f64], state: &[u8]) -> Option<String> {
+        let block = core::str::from_utf8(state).unwrap_or_default();
+        Some(settings::Settings::parse(block).to_script())
+    }
+
+    /// The page's one request: load a model from disk. Main thread, so the
+    /// I/O is allowed here and nowhere else in this plugin.
+    fn editor_message(text: &str) -> Option<String> {
+        text.strip_prefix("model ").map(model::load)
     }
 }
 

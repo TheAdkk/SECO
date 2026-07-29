@@ -1,0 +1,17 @@
+[package]
+name = "neta-wgpu"
+version.workspace = true
+edition.workspace = true
+# `wgpu` 29 supports Rust 1.87+. This is the only GPU backend crate.
+rust-version = "1.87"
+
+[lib]
+name = "neta_wgpu"
+
+[dependencies]
+neta-visual = { path = "../visual" }
+raw-window-handle = "0.6.2"
+wgpu = "29.0.3"
+
+[dev-dependencies]
+pollster = "0.4.0"

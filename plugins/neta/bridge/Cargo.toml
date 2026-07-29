@@ -1,0 +1,9 @@
+[package]
+name = "neta-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# Portable in-process core for Neta's future plugin-to-app bridge.  The
+# shared-memory transport is intentionally a separate outer layer.
+[dependencies]

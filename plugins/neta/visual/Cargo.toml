@@ -1,0 +1,10 @@
+[package]
+name = "neta-visual"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "neta_visual"
+
+[dependencies]

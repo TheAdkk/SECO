@@ -1,0 +1,23 @@
+[package]
+name = "neta-app"
+version.workspace = true
+edition.workspace = true
+# `wgpu` 29 supports Rust 1.87+. Keep this requirement local to Neta's
+# standalone GPU application instead of raising every unrelated SECO crate.
+rust-version = "1.87"
+
+[[bin]]
+name = "neta-app"
+path = "src/main.rs"
+
+[dependencies]
+cpal = "0.18.1"
+dalia-core = { path = "../../../../dalia/dalia-core", default-features = false }
+gltf = { version = "1.4.1", default-features = false, features = ["import", "utils"] }
+neta-bridge = { path = "../bridge" }
+neta-meter = { path = "../meter" }
+neta-visual = { path = "../visual" }
+neta-wgpu = { path = "../wgpu" }
+pollster = "0.4.0"
+wgpu = "29.0.3"
+winit = "0.30.12"

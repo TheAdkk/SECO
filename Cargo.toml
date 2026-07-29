@@ -6,7 +6,11 @@ members = [
     "framework/seco-dsp",
     "plugins/zape",
     "plugins/neta",
+    "plugins/neta/bridge",
     "plugins/neta/meter",
+    "plugins/neta/visual",
+    "plugins/neta/wgpu",
+    "plugins/neta/app",
     "xtask",
 ]
 

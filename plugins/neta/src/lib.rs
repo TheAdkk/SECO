@@ -9,6 +9,10 @@
 //! can be a second shell around the same numbers rather than a second
 //! implementation of them.
 //!
+//! The full plan — what it contains, where the audio comes from, why the
+//! renderer is not a webview, and how `dalia` links in — is in
+//! `docs/neta/PLAN.md`.
+//!
 //! # Where it stands
 //!
 //! It loads, passes audio through untouched, and measures nothing yet. That

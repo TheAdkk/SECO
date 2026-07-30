@@ -2,7 +2,7 @@
 //!
 //! [`ScopeAnalyzer`] accepts planar stereo blocks and maintains fixed-size
 //! representations for a waveform, goniometer, correlation/mid-side metrics,
-//! logarithmic spectrum, and spectrogram. Construction allocates every buffer;
+//! display spectrum, and spectrogram. Construction allocates every buffer;
 //! [`ScopeAnalyzer::process_stereo`] only updates existing storage.
 
 use std::error::Error;
@@ -13,6 +13,109 @@ use std::fmt;
 pub const SPECTRUM_FLOOR_DBFS: f32 = -120.0;
 
 const SPECTRUM_FLOOR_AMPLITUDE: f32 = 0.000_001;
+
+/// Frequency distribution used for display spectrum bands.
+///
+/// The FFT itself always remains linear-frequency. This only changes how its
+/// fixed bins are grouped for [`ScopeAnalyzer::spectrum`], so switching scale
+/// cannot allocate or alter incoming audio.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpectrumScale {
+    /// Equal-width bands in frequency.
+    Linear,
+    /// Equal-width bands in the perceptual Mel domain.
+    Mel,
+    /// Equal-width bands in logarithmic frequency.
+    #[default]
+    Log,
+}
+
+impl SpectrumScale {
+    const ALL: [Self; 3] = [Self::Log, Self::Mel, Self::Linear];
+
+    const fn storage_index(self) -> usize {
+        match self {
+            Self::Log => 0,
+            Self::Mel => 1,
+            Self::Linear => 2,
+        }
+    }
+}
+
+/// Trigger policy used by [`ScopeAnalyzer::copy_oscilloscope`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OscilloscopeMode {
+    /// Align a stable rising zero crossing when one is available.
+    #[default]
+    Pitch,
+    /// Return newest chronological audio without trigger alignment.
+    Free,
+}
+
+/// Number of cycles presented by pitch-triggered oscilloscope output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OscilloscopeCycles {
+    /// Present one estimated cycle.
+    Single,
+    /// Present up to three estimated cycles.
+    #[default]
+    Multi,
+}
+
+/// One original stereo sample retained for oscilloscope drawing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OscilloscopeSample {
+    /// Left channel sample.
+    pub left: f32,
+    /// Right channel sample.
+    pub right: f32,
+}
+
+/// Bounded scope work selected for one input block.
+///
+/// Disabling a flag preserves its retained result until callers reset it or
+/// process that flag again. This lets a shell avoid FFT work while Spectrum
+/// and Spectrogram are hidden without changing audio or allocating.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ScopeWork(u8);
+
+impl ScopeWork {
+    /// Do rolling correlation and M/S scalar measurements.
+    pub const CORRELATION: Self = Self(1 << 0);
+    /// Fill min/max waveform envelope buckets.
+    pub const WAVEFORM: Self = Self(1 << 1);
+    /// Fill vectorscope points.
+    pub const GONIOMETER: Self = Self(1 << 2);
+    /// Retain original samples for oscilloscope drawing.
+    pub const OSCILLOSCOPE: Self = Self(1 << 3);
+    /// Run FFT, display spectrum, and spectrogram history.
+    pub const SPECTRUM: Self = Self(1 << 4);
+    /// Process no optional scope representation.
+    pub const NONE: Self = Self(0);
+    /// Process every representation.
+    pub const ALL: Self = Self(
+        Self::CORRELATION.0
+            | Self::WAVEFORM.0
+            | Self::GONIOMETER.0
+            | Self::OSCILLOSCOPE.0
+            | Self::SPECTRUM.0,
+    );
+
+    /// Returns whether `flag` is enabled by this work set.
+    pub const fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 == flag.0
+    }
+
+    /// Returns this work set with `flag` enabled.
+    pub const fn with(self, flag: Self) -> Self {
+        Self(self.0 | flag.0)
+    }
+
+    /// Returns this work set with `flag` disabled.
+    pub const fn without(self, flag: Self) -> Self {
+        Self(self.0 & !flag.0)
+    }
+}
 
 /// Construction settings for [`ScopeAnalyzer`].
 ///
@@ -37,12 +140,20 @@ pub struct ScopeConfig {
     pub goniometer_points: usize,
     /// Number of input frames between retained goniometer points.
     pub goniometer_decimation_frames: usize,
+    /// Number of original stereo frames retained for oscilloscope output.
+    ///
+    /// This is separate from waveform envelope buckets: each slot preserves
+    /// both original samples so triggered oscilloscope output can be
+    /// resampled without touching audio-thread allocation.
+    pub oscilloscope_frames: usize,
     /// Power-of-two FFT size used for spectrum analysis.
     pub fft_size: usize,
     /// Number of fresh frames required before another FFT is run.
     pub fft_hop_frames: usize,
-    /// Number of logarithmically spaced spectrum bands.
+    /// Number of display spectrum bands.
     pub spectrum_bands: usize,
+    /// Initial distribution used for display spectrum bands.
+    pub spectrum_scale: SpectrumScale,
     /// Number of chronological spectrum rows retained for spectrogram output.
     pub spectrogram_rows: usize,
     /// Low edge of first spectrum band, in Hz.
@@ -74,9 +185,13 @@ impl ScopeConfig {
             waveform_seconds: 0.25,
             goniometer_points: 1_024,
             goniometer_decimation_frames: 8,
+            // 0.34 s at 48 kHz: enough for several low-frequency cycles,
+            // while stereo raw storage stays below 128 KiB.
+            oscilloscope_frames: 16_384,
             fft_size: 2_048,
             fft_hop_frames: 1_024,
             spectrum_bands: 96,
+            spectrum_scale: SpectrumScale::Log,
             spectrogram_rows: 256,
             min_spectrum_hz: 20.0,
             max_spectrum_hz: 20_000.0_f64.min(sample_rate * 0.5),
@@ -110,6 +225,8 @@ pub enum ScopeConfigError {
     InvalidGoniometerPoints,
     /// Goniometer decimation is zero.
     InvalidGoniometerDecimation,
+    /// Oscilloscope sample capacity is zero.
+    InvalidOscilloscopeFrames,
     /// FFT size is not a power of two of at least sixteen frames.
     InvalidFftSize,
     /// FFT hop is zero or larger than FFT size.
@@ -140,6 +257,9 @@ impl fmt::Display for ScopeConfigError {
             }
             Self::InvalidGoniometerPoints => "goniometer point count must be greater than zero",
             Self::InvalidGoniometerDecimation => "goniometer decimation must be greater than zero",
+            Self::InvalidOscilloscopeFrames => {
+                "oscilloscope frame capacity must be greater than zero"
+            }
             Self::InvalidFftSize => "FFT size must be a power of two of at least sixteen",
             Self::InvalidFftHop => "FFT hop must be between one frame and FFT size",
             Self::InvalidSpectrumBands => "spectrum band count must be greater than zero",
@@ -238,7 +358,7 @@ pub struct GoniometerPoint {
     pub mid: f32,
 }
 
-/// One logarithmically spaced spectrum band.
+/// One display spectrum band.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpectrumBand {
     /// Inclusive low frequency edge, in Hz.
@@ -351,9 +471,11 @@ impl Complex {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct LogBand {
+struct SpectrumMapping {
     first_bin: usize,
     last_bin: usize,
+    low_hz: f64,
+    high_hz: f64,
 }
 
 /// Fixed-storage realtime stereo analyzer.
@@ -381,6 +503,9 @@ pub struct ScopeAnalyzer {
     goniometer_write: usize,
     goniometer_count: usize,
     goniometer_frames_until_point: usize,
+    oscilloscope: Box<[OscilloscopeSample]>,
+    oscilloscope_write: usize,
+    oscilloscope_count: usize,
     fft_ring: Box<[f32]>,
     fft_cursor: usize,
     fft_count: usize,
@@ -391,7 +516,7 @@ pub struct ScopeAnalyzer {
     fft_twiddles: Box<[Complex]>,
     fft_work: Box<[Complex]>,
     linear_spectrum: Box<[f32]>,
-    log_bands: Box<[LogBand]>,
+    spectrum_maps: [Box<[SpectrumMapping]>; 3],
     spectrum: Box<[SpectrumBand]>,
     spectrogram: Box<[f32]>,
     spectrogram_write: usize,
@@ -435,29 +560,18 @@ impl ScopeAnalyzer {
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        let mut log_bands = Vec::with_capacity(config.spectrum_bands);
-        let mut spectrum = Vec::with_capacity(config.spectrum_bands);
-        let nyquist_bin = config.fft_size / 2;
-        for index in 0..config.spectrum_bands {
-            let low_position = index as f64 / config.spectrum_bands as f64;
-            let high_position = (index + 1) as f64 / config.spectrum_bands as f64;
-            let ratio = config.max_spectrum_hz / config.min_spectrum_hz;
-            let low_hz = config.min_spectrum_hz * ratio.powf(low_position);
-            let high_hz = config.min_spectrum_hz * ratio.powf(high_position);
-            let first_bin =
-                frequency_to_bin(low_hz, config.sample_rate, config.fft_size).clamp(1, nyquist_bin);
-            let last_bin = frequency_to_bin(high_hz, config.sample_rate, config.fft_size)
-                .clamp(first_bin, nyquist_bin);
-            log_bands.push(LogBand {
-                first_bin,
-                last_bin,
-            });
-            spectrum.push(SpectrumBand {
-                low_hz,
-                high_hz,
+        // Every selectable display mapping is allocated once. Runtime scale
+        // changes only swap which precomputed bin ranges are read.
+        let spectrum_maps = SpectrumScale::ALL.map(|scale| build_spectrum_mapping(config, scale));
+        let active_mapping = &spectrum_maps[config.spectrum_scale.storage_index()];
+        let spectrum = active_mapping
+            .iter()
+            .map(|mapping| SpectrumBand {
+                low_hz: mapping.low_hz,
+                high_hz: mapping.high_hz,
                 level_dbfs: SPECTRUM_FLOOR_DBFS,
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
         Ok(Self {
             config,
@@ -480,6 +594,10 @@ impl ScopeAnalyzer {
             goniometer_write: 0,
             goniometer_count: 0,
             goniometer_frames_until_point: 0,
+            oscilloscope: vec![OscilloscopeSample::default(); config.oscilloscope_frames]
+                .into_boxed_slice(),
+            oscilloscope_write: 0,
+            oscilloscope_count: 0,
             fft_ring: vec![0.0; config.fft_size].into_boxed_slice(),
             fft_cursor: 0,
             fft_count: 0,
@@ -494,7 +612,7 @@ impl ScopeAnalyzer {
             // own musical bands without pretending logarithmic display
             // bands are FFT bins.
             linear_spectrum: vec![0.0; config.fft_size / 2 + 1].into_boxed_slice(),
-            log_bands: log_bands.into_boxed_slice(),
+            spectrum_maps,
             spectrum: spectrum.into_boxed_slice(),
             spectrogram: vec![SPECTRUM_FLOOR_DBFS; spectrogram_values].into_boxed_slice(),
             spectrogram_write: 0,
@@ -515,6 +633,20 @@ impl ScopeAnalyzer {
     /// Non-finite input samples are treated as silence, preventing a bad host
     /// buffer from poisoning a visual frame.
     pub fn process_stereo(&mut self, left: &[f32], right: &[f32]) -> Result<(), ScopeProcessError> {
+        self.process_stereo_masked(left, right, ScopeWork::ALL)
+    }
+
+    /// Processes one bounded planar stereo block with selected analysis work.
+    ///
+    /// The block shape checks match [`Self::process_stereo`]. Every accepted
+    /// frame still advances total duration; disabled representations retain
+    /// their last result and skip their work entirely.
+    pub fn process_stereo_masked(
+        &mut self,
+        left: &[f32],
+        right: &[f32],
+        work: ScopeWork,
+    ) -> Result<(), ScopeProcessError> {
         if left.len() != right.len() {
             return Err(ScopeProcessError::UnevenChannels);
         }
@@ -526,7 +658,7 @@ impl ScopeAnalyzer {
         }
 
         for (&left, &right) in left.iter().zip(right) {
-            self.push_frame(sanitize_sample(left), sanitize_sample(right));
+            self.push_frame_masked(sanitize_sample(left), sanitize_sample(right), work);
         }
         Ok(())
     }
@@ -534,6 +666,15 @@ impl ScopeAnalyzer {
     /// Processes one mono block as equal left and right channels.
     pub fn process_mono(&mut self, samples: &[f32]) -> Result<(), ScopeProcessError> {
         self.process_stereo(samples, samples)
+    }
+
+    /// Processes one mono block with selected analysis work.
+    pub fn process_mono_masked(
+        &mut self,
+        samples: &[f32],
+        work: ScopeWork,
+    ) -> Result<(), ScopeProcessError> {
+        self.process_stereo_masked(samples, samples, work)
     }
 
     /// Changes spectrum attack and release without reallocating any storage.
@@ -548,42 +689,74 @@ impl ScopeAnalyzer {
         Ok(())
     }
 
+    /// Changes display spectrum grouping without allocating fixed storage.
+    ///
+    /// Existing display spectrum and spectrogram rows refer to previous band
+    /// edges, so this clears that display history. FFT input history remains
+    /// intact and produces a fresh row at its next scheduled hop.
+    pub fn set_spectrum_scale(&mut self, scale: SpectrumScale) {
+        if self.config.spectrum_scale == scale {
+            return;
+        }
+        self.config.spectrum_scale = scale;
+        self.sync_spectrum_band_edges();
+        self.clear_spectrum_history();
+    }
+
+    /// Returns current display spectrum grouping.
+    pub fn spectrum_scale(&self) -> SpectrumScale {
+        self.config.spectrum_scale
+    }
+
     /// Clears accumulated state while retaining all fixed allocations.
     pub fn reset(&mut self) {
-        self.correlation_ring.fill(StereoEnergy::default());
-        self.correlation_cursor = 0;
-        self.correlation_count = 0;
-        self.left_square_sum = 0.0;
-        self.right_square_sum = 0.0;
-        self.cross_sum = 0.0;
-        self.mid_square_sum = 0.0;
-        self.side_square_sum = 0.0;
-
-        self.waveform.fill(WaveformBucket::empty());
-        self.waveform_current = 0;
-        self.waveform_count = 0;
-        self.waveform_frames_in_current = 0;
-
-        self.goniometer.fill(GoniometerPoint::default());
-        self.goniometer_write = 0;
-        self.goniometer_count = 0;
-        self.goniometer_frames_until_point = 0;
-
-        self.fft_ring.fill(0.0);
-        self.fft_cursor = 0;
-        self.fft_count = 0;
-        self.fft_frames_since_analysis = 0;
-        self.fft_work.fill(Complex::default());
-        self.linear_spectrum.fill(0.0);
-        for band in &mut self.spectrum {
-            band.level_dbfs = SPECTRUM_FLOOR_DBFS;
-        }
-        self.spectrogram.fill(SPECTRUM_FLOOR_DBFS);
-        self.spectrogram_write = 0;
-        self.spectrogram_count = 0;
-        self.spectrum_ready = false;
-        self.spectrum_frames = 0;
+        self.reset_work(ScopeWork::ALL);
         self.processed_frames = 0;
+    }
+
+    /// Clears selected retained representations without allocating.
+    ///
+    /// Use this when a hidden module becomes visible again: it prevents old
+    /// waveform, scope, goniometer, or spectrum history from masquerading as
+    /// fresh analysis while leaving other enabled modules uninterrupted.
+    /// Global accepted-frame duration is intentionally preserved.
+    pub fn reset_work(&mut self, work: ScopeWork) {
+        if work.contains(ScopeWork::CORRELATION) {
+            self.correlation_ring.fill(StereoEnergy::default());
+            self.correlation_cursor = 0;
+            self.correlation_count = 0;
+            self.left_square_sum = 0.0;
+            self.right_square_sum = 0.0;
+            self.cross_sum = 0.0;
+            self.mid_square_sum = 0.0;
+            self.side_square_sum = 0.0;
+        }
+        if work.contains(ScopeWork::WAVEFORM) {
+            self.waveform.fill(WaveformBucket::empty());
+            self.waveform_current = 0;
+            self.waveform_count = 0;
+            self.waveform_frames_in_current = 0;
+        }
+        if work.contains(ScopeWork::GONIOMETER) {
+            self.goniometer.fill(GoniometerPoint::default());
+            self.goniometer_write = 0;
+            self.goniometer_count = 0;
+            self.goniometer_frames_until_point = 0;
+        }
+        if work.contains(ScopeWork::OSCILLOSCOPE) {
+            self.oscilloscope.fill(OscilloscopeSample::default());
+            self.oscilloscope_write = 0;
+            self.oscilloscope_count = 0;
+        }
+        if work.contains(ScopeWork::SPECTRUM) {
+            self.fft_ring.fill(0.0);
+            self.fft_cursor = 0;
+            self.fft_count = 0;
+            self.fft_frames_since_analysis = 0;
+            self.fft_work.fill(Complex::default());
+            self.linear_spectrum.fill(0.0);
+            self.clear_spectrum_history();
+        }
     }
 
     /// Returns current scalar correlation, M/S, and spectrum state.
@@ -680,7 +853,40 @@ impl ScopeAnalyzer {
         amount
     }
 
-    /// Returns all current logarithmic spectrum bands, low frequency first.
+    /// Number of original oscilloscope frames currently retained.
+    pub fn oscilloscope_frame_count(&self) -> usize {
+        self.oscilloscope_count
+    }
+
+    /// Copies a bounded stereo oscilloscope trace into caller-owned storage.
+    ///
+    /// `Free` copies newest chronological audio. `Pitch` searches the
+    /// strongest finite channel for two rising threshold crossings, then
+    /// resamples one or up to three complete periods. Silence, DC, short
+    /// buffers, and untriggerable material fall back to newest chronological
+    /// audio. No path allocates or mutates retained source storage.
+    pub fn copy_oscilloscope(
+        &self,
+        destination: &mut [OscilloscopeSample],
+        mode: OscilloscopeMode,
+        cycles: OscilloscopeCycles,
+    ) -> usize {
+        let amount = destination.len().min(self.oscilloscope_count);
+        if amount == 0 {
+            return 0;
+        }
+
+        let (start, frames) = match mode {
+            OscilloscopeMode::Free => (self.oscilloscope_count - amount, amount),
+            OscilloscopeMode::Pitch => self
+                .pitch_oscilloscope_window(cycles)
+                .unwrap_or((self.oscilloscope_count - amount, amount)),
+        };
+        self.copy_oscilloscope_window(destination, amount, start, frames);
+        amount
+    }
+
+    /// Returns all current display spectrum bands, low frequency first.
     pub fn spectrum(&self) -> &[SpectrumBand] {
         &self.spectrum
     }
@@ -691,7 +897,7 @@ impl ScopeAnalyzer {
     /// `fft_size() / 2 + 1` elements, including Nyquist, and is updated whenever a new spectrum frame
     /// is available. It is intended for consumers that need true
     /// linear-frequency bins; the regular [`Self::spectrum`] remains the
-    /// log-spaced display representation.
+    /// selected display-scale representation.
     pub fn linear_spectrum(&self) -> &[f32] {
         &self.linear_spectrum
     }
@@ -734,13 +940,24 @@ impl ScopeAnalyzer {
         self.config.fft_size
     }
 
-    fn push_frame(&mut self, left: f32, right: f32) {
+    fn push_frame_masked(&mut self, left: f32, right: f32, work: ScopeWork) {
         let mid = ((f64::from(left) + f64::from(right)) * 0.5) as f32;
         let side = ((f64::from(left) - f64::from(right)) * 0.5) as f32;
-        self.push_energy(left, right, mid, side);
-        self.push_waveform(left, right);
-        self.push_goniometer(side, mid);
-        self.push_fft(mid);
+        if work.contains(ScopeWork::CORRELATION) {
+            self.push_energy(left, right, mid, side);
+        }
+        if work.contains(ScopeWork::WAVEFORM) {
+            self.push_waveform(left, right);
+        }
+        if work.contains(ScopeWork::GONIOMETER) {
+            self.push_goniometer(side, mid);
+        }
+        if work.contains(ScopeWork::OSCILLOSCOPE) {
+            self.push_oscilloscope(left, right);
+        }
+        if work.contains(ScopeWork::SPECTRUM) {
+            self.push_fft(mid);
+        }
         self.processed_frames = self.processed_frames.saturating_add(1);
     }
 
@@ -779,6 +996,12 @@ impl ScopeAnalyzer {
         } else {
             self.goniometer_frames_until_point -= 1;
         }
+    }
+
+    fn push_oscilloscope(&mut self, left: f32, right: f32) {
+        self.oscilloscope[self.oscilloscope_write] = OscilloscopeSample { left, right };
+        self.oscilloscope_write = (self.oscilloscope_write + 1) % self.oscilloscope.len();
+        self.oscilloscope_count = (self.oscilloscope_count + 1).min(self.oscilloscope.len());
     }
 
     fn push_fft(&mut self, sample: f32) {
@@ -824,7 +1047,7 @@ impl ScopeAnalyzer {
         let row_offset = self.spectrogram_write * self.spectrum.len();
         let seconds_per_frame = self.config.fft_hop_frames as f64 / self.config.sample_rate;
         for index in 0..self.spectrum.len() {
-            let mapping = self.log_bands[index];
+            let mapping = self.spectrum_maps[self.config.spectrum_scale.storage_index()][index];
             let mut magnitude = 0.0_f32;
             for bin in mapping.first_bin..=mapping.last_bin {
                 magnitude = magnitude.max(self.linear_spectrum[bin]);
@@ -865,6 +1088,118 @@ impl ScopeAnalyzer {
         } else {
             (self.goniometer_write + chronological_index) % self.goniometer.len()
         }
+    }
+
+    fn oscilloscope_storage_index(&self, chronological_index: usize) -> usize {
+        if self.oscilloscope_count < self.oscilloscope.len() {
+            chronological_index
+        } else {
+            (self.oscilloscope_write + chronological_index) % self.oscilloscope.len()
+        }
+    }
+
+    fn oscilloscope_sample(&self, chronological_index: usize) -> OscilloscopeSample {
+        self.oscilloscope[self.oscilloscope_storage_index(chronological_index)]
+    }
+
+    fn pitch_oscilloscope_window(&self, cycles: OscilloscopeCycles) -> Option<(usize, usize)> {
+        if self.oscilloscope_count < 4 {
+            return None;
+        }
+
+        let mut left_peak = 0.0_f32;
+        let mut right_peak = 0.0_f32;
+        for index in 0..self.oscilloscope_count {
+            let sample = self.oscilloscope_sample(index);
+            left_peak = left_peak.max(sample.left.abs());
+            right_peak = right_peak.max(sample.right.abs());
+        }
+        let use_left = left_peak >= right_peak;
+        let peak = if use_left { left_peak } else { right_peak };
+        // Relative hysteresis rejects low-level noise; floor keeps a normal
+        // audio waveform triggerable even after a near-silent section.
+        let threshold = (peak * 0.05).max(0.000_01);
+        if peak <= threshold {
+            return None;
+        }
+
+        let sample_value = |index: usize| {
+            let sample = self.oscilloscope_sample(index);
+            if use_left { sample.left } else { sample.right }
+        };
+        let mut prior_crossing = None;
+        let mut latest_crossing = None;
+        let mut previous = sample_value(0);
+        for index in 1..self.oscilloscope_count {
+            let current = sample_value(index);
+            if previous <= -threshold && current >= threshold {
+                prior_crossing = latest_crossing;
+                latest_crossing = Some(index);
+            }
+            previous = current;
+        }
+        let (prior_crossing, latest_crossing) = prior_crossing.zip(latest_crossing)?;
+        let period = latest_crossing.checked_sub(prior_crossing)?;
+        if period < 2 {
+            return None;
+        }
+        let requested = match cycles {
+            OscilloscopeCycles::Single => period,
+            OscilloscopeCycles::Multi => period.saturating_mul(3),
+        };
+        let start = latest_crossing.saturating_sub(requested);
+        let frames = latest_crossing.saturating_sub(start);
+        (frames >= 2).then_some((start, frames))
+    }
+
+    fn copy_oscilloscope_window(
+        &self,
+        destination: &mut [OscilloscopeSample],
+        amount: usize,
+        start: usize,
+        frames: usize,
+    ) {
+        debug_assert!(amount <= destination.len());
+        debug_assert!(frames > 0);
+        debug_assert!(start + frames <= self.oscilloscope_count);
+        if amount == 1 || frames == 1 {
+            destination[0] = self.oscilloscope_sample(start);
+            return;
+        }
+
+        let source_width = (frames - 1) as f64;
+        let destination_width = (amount - 1) as f64;
+        for (index, output) in destination[..amount].iter_mut().enumerate() {
+            let position = index as f64 * source_width / destination_width;
+            let first = position as usize;
+            let second = (first + 1).min(frames - 1);
+            let fraction = (position - first as f64) as f32;
+            let first = self.oscilloscope_sample(start + first);
+            let second = self.oscilloscope_sample(start + second);
+            *output = OscilloscopeSample {
+                left: first.left + (second.left - first.left) * fraction,
+                right: first.right + (second.right - first.right) * fraction,
+            };
+        }
+    }
+
+    fn sync_spectrum_band_edges(&mut self) {
+        let mapping = &self.spectrum_maps[self.config.spectrum_scale.storage_index()];
+        for (band, mapping) in self.spectrum.iter_mut().zip(mapping) {
+            band.low_hz = mapping.low_hz;
+            band.high_hz = mapping.high_hz;
+        }
+    }
+
+    fn clear_spectrum_history(&mut self) {
+        for band in &mut self.spectrum {
+            band.level_dbfs = SPECTRUM_FLOOR_DBFS;
+        }
+        self.spectrogram.fill(SPECTRUM_FLOOR_DBFS);
+        self.spectrogram_write = 0;
+        self.spectrogram_count = 0;
+        self.spectrum_ready = false;
+        self.spectrum_frames = 0;
     }
 
     fn spectrogram_storage_index(&self, chronological_index: usize) -> usize {
@@ -909,6 +1244,9 @@ fn validate_config(config: ScopeConfig) -> Result<DerivedConfig, ScopeConfigErro
     }
     if config.goniometer_decimation_frames == 0 {
         return Err(ScopeConfigError::InvalidGoniometerDecimation);
+    }
+    if config.oscilloscope_frames == 0 {
+        return Err(ScopeConfigError::InvalidOscilloscopeFrames);
     }
     if config.fft_size < 16 || !config.fft_size.is_power_of_two() {
         return Err(ScopeConfigError::InvalidFftSize);
@@ -981,6 +1319,53 @@ fn seconds_to_frames(
     } else {
         Err(error)
     }
+}
+
+fn build_spectrum_mapping(config: ScopeConfig, scale: SpectrumScale) -> Box<[SpectrumMapping]> {
+    let mut mapping = Vec::with_capacity(config.spectrum_bands);
+    let nyquist_bin = config.fft_size / 2;
+    let min_mel = hz_to_mel(config.min_spectrum_hz);
+    let max_mel = hz_to_mel(config.max_spectrum_hz);
+    let log_ratio = config.max_spectrum_hz / config.min_spectrum_hz;
+    for index in 0..config.spectrum_bands {
+        let low_position = index as f64 / config.spectrum_bands as f64;
+        let high_position = (index + 1) as f64 / config.spectrum_bands as f64;
+        let (low_hz, high_hz) = match scale {
+            SpectrumScale::Linear => (
+                config.min_spectrum_hz
+                    + (config.max_spectrum_hz - config.min_spectrum_hz) * low_position,
+                config.min_spectrum_hz
+                    + (config.max_spectrum_hz - config.min_spectrum_hz) * high_position,
+            ),
+            SpectrumScale::Mel => (
+                mel_to_hz(min_mel + (max_mel - min_mel) * low_position),
+                mel_to_hz(min_mel + (max_mel - min_mel) * high_position),
+            ),
+            SpectrumScale::Log => (
+                config.min_spectrum_hz * log_ratio.powf(low_position),
+                config.min_spectrum_hz * log_ratio.powf(high_position),
+            ),
+        };
+        let first_bin =
+            frequency_to_bin(low_hz, config.sample_rate, config.fft_size).clamp(1, nyquist_bin);
+        let last_bin = frequency_to_bin(high_hz, config.sample_rate, config.fft_size)
+            .clamp(first_bin, nyquist_bin);
+        mapping.push(SpectrumMapping {
+            first_bin,
+            last_bin,
+            low_hz,
+            high_hz,
+        });
+    }
+    mapping.into_boxed_slice()
+}
+
+fn hz_to_mel(frequency_hz: f64) -> f64 {
+    2_595.0 * (1.0 + frequency_hz / 700.0).log10()
+}
+
+fn mel_to_hz(mel: f64) -> f64 {
+    700.0 * (10.0_f64.powf(mel / 2_595.0) - 1.0)
 }
 
 fn frequency_to_bin(frequency_hz: f64, sample_rate: f64, fft_size: usize) -> usize {
@@ -1062,9 +1447,11 @@ mod tests {
             waveform_seconds: 8.0 / SAMPLE_RATE,
             goniometer_points: 3,
             goniometer_decimation_frames: 2,
+            oscilloscope_frames: 16,
             fft_size: 64,
             fft_hop_frames: 32,
             spectrum_bands: 16,
+            spectrum_scale: SpectrumScale::Log,
             spectrogram_rows: 2,
             min_spectrum_hz: 100.0,
             max_spectrum_hz: 20_000.0,
@@ -1108,6 +1495,13 @@ mod tests {
         assert_eq!(
             ScopeAnalyzer::new(invalid).unwrap_err(),
             ScopeConfigError::InvalidSpectrumRange
+        );
+
+        invalid = config();
+        invalid.oscilloscope_frames = 0;
+        assert_eq!(
+            ScopeAnalyzer::new(invalid).unwrap_err(),
+            ScopeConfigError::InvalidOscilloscopeFrames
         );
     }
 
@@ -1243,6 +1637,112 @@ mod tests {
     }
 
     #[test]
+    fn spectrum_scale_swaps_preallocated_mappings_and_clears_display_history() {
+        let mut analyzer = ScopeAnalyzer::new(config()).unwrap();
+        let spectrum_storage = analyzer.spectrum.as_ptr();
+        analyzer.process_mono(&[0.5; 64]).unwrap();
+        assert_eq!(analyzer.spectrum_frame_count(), 1);
+        let log_first = analyzer.spectrum()[0];
+
+        analyzer.set_spectrum_scale(SpectrumScale::Linear);
+        assert_eq!(analyzer.spectrum.as_ptr(), spectrum_storage);
+        assert_eq!(analyzer.spectrum_scale(), SpectrumScale::Linear);
+        assert_eq!(analyzer.spectrum_frame_count(), 0);
+        assert_eq!(analyzer.spectrogram_row_count(), 0);
+        let linear_first = analyzer.spectrum()[0];
+        assert_eq!(linear_first.low_hz, 100.0);
+        assert!(linear_first.high_hz > log_first.high_hz);
+
+        analyzer.set_spectrum_scale(SpectrumScale::Mel);
+        assert_eq!(analyzer.spectrum_scale(), SpectrumScale::Mel);
+        assert!(analyzer.spectrum()[0].high_hz < linear_first.high_hz);
+    }
+
+    #[test]
+    fn masked_processing_skips_fft_but_retains_requested_oscilloscope_samples() {
+        let mut analyzer = ScopeAnalyzer::new(config()).unwrap();
+        analyzer
+            .process_mono_masked(&[0.25; 64], ScopeWork::OSCILLOSCOPE)
+            .unwrap();
+        assert_eq!(analyzer.spectrum_frame_count(), 0);
+        assert_eq!(analyzer.snapshot().correlation, None);
+        assert_eq!(analyzer.oscilloscope_frame_count(), 16);
+        let mut output = [OscilloscopeSample::default(); 4];
+        assert_eq!(
+            analyzer.copy_oscilloscope(
+                &mut output,
+                OscilloscopeMode::Free,
+                OscilloscopeCycles::Multi
+            ),
+            4
+        );
+        assert!(
+            output
+                .iter()
+                .all(|sample| sample.left == 0.25 && sample.right == 0.25)
+        );
+    }
+
+    #[test]
+    fn oscilloscope_free_copy_keeps_newest_chronological_samples_after_wrap() {
+        let mut analyzer = ScopeAnalyzer::new(config()).unwrap();
+        let left = [
+            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+            16.0, 17.0, 18.0, 19.0,
+        ];
+        analyzer
+            .process_stereo_masked(&left, &left, ScopeWork::OSCILLOSCOPE)
+            .unwrap();
+        let mut output = [OscilloscopeSample::default(); 4];
+        assert_eq!(
+            analyzer.copy_oscilloscope(
+                &mut output,
+                OscilloscopeMode::Free,
+                OscilloscopeCycles::Single
+            ),
+            4
+        );
+        for (index, sample) in output.iter().enumerate() {
+            assert_close(sample.left, 16.0 + index as f32, 0.000_01);
+            assert_close(sample.right, 16.0 + index as f32, 0.000_01);
+        }
+    }
+
+    #[test]
+    fn pitch_oscilloscope_aligns_complete_cycles_without_mutating_raw_history() {
+        let mut pitch_config = config();
+        pitch_config.oscilloscope_frames = 128;
+        let mut analyzer = ScopeAnalyzer::new(pitch_config).unwrap();
+        let mut samples = [0.0_f32; 128];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = (2.0 * PI * 6_000.0 * index as f64 / SAMPLE_RATE).sin() as f32;
+        }
+        analyzer
+            .process_mono_masked(&samples, ScopeWork::OSCILLOSCOPE)
+            .unwrap();
+        let mut output = [OscilloscopeSample::default(); 32];
+        assert_eq!(
+            analyzer.copy_oscilloscope(
+                &mut output,
+                OscilloscopeMode::Pitch,
+                OscilloscopeCycles::Single
+            ),
+            32
+        );
+        let low = output
+            .iter()
+            .map(|sample| sample.left)
+            .fold(f32::INFINITY, f32::min);
+        let high = output
+            .iter()
+            .map(|sample| sample.left)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(low < -0.8, "triggered trace lost negative half: {low}");
+        assert!(high > 0.8, "triggered trace lost positive half: {high}");
+        assert_eq!(analyzer.oscilloscope_frame_count(), 128);
+    }
+
+    #[test]
     fn reset_clears_linear_spectrum() {
         let mut analyzer = ScopeAnalyzer::new(config()).unwrap();
         let samples = [1.0_f32; 64];
@@ -1294,12 +1794,14 @@ mod tests {
         let mut analyzer = ScopeAnalyzer::new(config()).unwrap();
         let waveform = analyzer.waveform.as_ptr();
         let goniometer = analyzer.goniometer.as_ptr();
+        let oscilloscope = analyzer.oscilloscope.as_ptr();
         let spectrum = analyzer.spectrum.as_ptr();
         analyzer.process_mono(&[0.5; 64]).unwrap();
         assert!(analyzer.snapshot().spectrum_ready);
         analyzer.reset();
         assert_eq!(analyzer.waveform.as_ptr(), waveform);
         assert_eq!(analyzer.goniometer.as_ptr(), goniometer);
+        assert_eq!(analyzer.oscilloscope.as_ptr(), oscilloscope);
         assert_eq!(analyzer.spectrum.as_ptr(), spectrum);
         assert_eq!(analyzer.snapshot().processed_frames, 0);
         assert_eq!(analyzer.waveform_bucket_count(), 0);

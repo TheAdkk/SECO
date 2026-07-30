@@ -32,14 +32,18 @@ const ABSOLUTE_GATE_LUFS: f64 = -70.0;
 const INTEGRATED_RELATIVE_GATE_LU: f64 = -10.0;
 const LRA_RELATIVE_GATE_LU: f64 = -20.0;
 const DEFAULT_HISTORY_SECONDS: usize = 12 * 60 * 60;
-/// Loudness resolution of the gating histogram, in LU.
+/// Lowest displayed loudness bin, matching the absolute R128 gate.
+pub const LOUDNESS_HISTOGRAM_MIN_LUFS: f64 = ABSOLUTE_GATE_LUFS;
+/// Loudness resolution of bounded histogram output, in LU.
 ///
 /// 0.1 LU is an order of magnitude finer than the ±1 LU tolerance EBU Tech
 /// 3341 allows, so binning never costs a compliance case.
-const HISTOGRAM_BIN_LU: f64 = 0.1;
-/// Loudest block the histogram resolves. Above this everything shares the
-/// top bin, which only affects a gate decision no real programme reaches.
-const HISTOGRAM_MAX_LUFS: f64 = 10.0;
+pub const LOUDNESS_HISTOGRAM_BIN_LU: f64 = 0.1;
+/// Loudest displayed histogram bin. Higher programme values share top bin.
+pub const LOUDNESS_HISTOGRAM_MAX_LUFS: f64 = 10.0;
+
+const HISTOGRAM_BIN_LU: f64 = LOUDNESS_HISTOGRAM_BIN_LU;
+const HISTOGRAM_MAX_LUFS: f64 = LOUDNESS_HISTOGRAM_MAX_LUFS;
 
 const TRUE_PEAK_PHASES: usize = 4;
 const TRUE_PEAK_TAPS: usize = 12;
@@ -475,6 +479,30 @@ pub struct RealtimeMeterSnapshot {
     pub processed_frames: u64,
 }
 
+/// Programme series used for bounded loudness histogram output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoudnessHistogramKind {
+    /// 400 ms blocks sampled every 100 ms, used for integrated loudness.
+    Integrated,
+    /// 3 s blocks sampled every 100 ms, used for loudness range.
+    ShortTerm,
+}
+
+/// One resampled bounded loudness histogram bucket.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LoudnessHistogramBin {
+    /// Inclusive low edge of this display bucket, in LUFS.
+    pub low_lufs: f64,
+    /// Exclusive high edge of this display bucket, in LUFS.
+    pub high_lufs: f64,
+    /// Number of source blocks represented by this bucket.
+    pub count: u64,
+    /// Energy-derived mean loudness of represented source blocks.
+    ///
+    /// `None` means no programme block fell in this display bucket.
+    pub mean_lufs: Option<f64>,
+}
+
 /// Current per-channel measurements.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChannelMetrics {
@@ -484,6 +512,398 @@ pub struct ChannelMetrics {
     pub true_peak_dbfs: Option<f64>,
     /// RMS over the latest window, up to 400 ms while starting.
     pub rms_dbfs: Option<f64>,
+}
+
+const VU_STANDARD_RESPONSE_SECONDS: f64 = 0.3;
+const VU_DEFAULT_ATTACK_SECONDS: f64 = 0.03;
+const VU_DEFAULT_RELEASE_SECONDS: f64 = 0.3;
+const VU_DEFAULT_PEAK_HOLD_SECONDS: f64 = 1.5;
+const VU_DEFAULT_CALIBRATION_DBFS: f64 = -18.0;
+
+/// Detector presented by [`VuMeter`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VuMode {
+    /// Standard 300 ms VU-like RMS response.
+    #[default]
+    Vu,
+    /// RMS detector with configurable attack and release.
+    Rms,
+    /// Absolute sample peak detector with configurable attack and release.
+    Peak,
+}
+
+/// Fixed settings for a stereo [`VuMeter`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VuConfig {
+    /// Audio sample rate in Hz.
+    pub sample_rate: f64,
+    /// Largest planar input block accepted by [`VuMeter::process_stereo`].
+    pub max_block_frames: usize,
+    /// Detector presented by the meter.
+    pub mode: VuMode,
+    /// dBFS value that should display as 0 calibrated VU/dB.
+    ///
+    /// For example, `-18.0` makes a `-18 dBFS` detector level report `0.0`
+    /// through [`VuChannelSnapshot::calibrated_db`].
+    pub calibration_dbfs: f64,
+    /// Rise time constant for RMS and peak modes, in seconds.
+    ///
+    /// Zero makes rises instantaneous. VU mode always uses its standard
+    /// 300 ms response rather than this setting.
+    pub attack_seconds: f64,
+    /// Fall time constant for RMS and peak modes, in seconds.
+    ///
+    /// Zero makes falls instantaneous. VU mode always uses its standard
+    /// 300 ms response rather than this setting.
+    pub release_seconds: f64,
+    /// Time a display peak remains pinned before it starts falling, in seconds.
+    pub peak_hold_seconds: f64,
+}
+
+impl VuConfig {
+    /// Returns practical stereo settings with -18 dBFS calibration.
+    pub fn recommended(sample_rate: f64, max_block_frames: usize) -> Result<Self, VuConfigError> {
+        let config = Self {
+            sample_rate,
+            max_block_frames,
+            mode: VuMode::Vu,
+            calibration_dbfs: VU_DEFAULT_CALIBRATION_DBFS,
+            attack_seconds: VU_DEFAULT_ATTACK_SECONDS,
+            release_seconds: VU_DEFAULT_RELEASE_SECONDS,
+            peak_hold_seconds: VU_DEFAULT_PEAK_HOLD_SECONDS,
+        };
+        validate_vu_config(config)?;
+        Ok(config)
+    }
+}
+
+impl Default for VuConfig {
+    fn default() -> Self {
+        // These fixed values are valid by construction.
+        Self::recommended(48_000.0, 1_024).expect("valid default VU configuration")
+    }
+}
+
+/// Invalid [`VuConfig`] value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VuConfigError {
+    /// Sample rate is non-finite or below 8 kHz.
+    InvalidSampleRate,
+    /// Maximum input block size is zero.
+    InvalidBlockSize,
+    /// Calibration reference is not finite.
+    InvalidCalibration,
+    /// Attack or release is non-finite or negative.
+    InvalidBallistics,
+    /// Peak hold duration is non-finite, negative, or cannot fit a frame count.
+    InvalidPeakHold,
+}
+
+impl fmt::Display for VuConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidSampleRate => "sample rate must be finite and at least 8 kHz",
+            Self::InvalidBlockSize => "maximum block size must be greater than zero",
+            Self::InvalidCalibration => "VU calibration must be finite",
+            Self::InvalidBallistics => "VU attack and release must be finite and non-negative",
+            Self::InvalidPeakHold => "VU peak hold must be finite, non-negative, and representable",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for VuConfigError {}
+
+/// Input block rejected by [`VuMeter`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VuProcessError {
+    /// Left and right slices do not have equal frame counts.
+    UnevenChannels,
+    /// Input exceeds maximum block size declared at construction.
+    BlockTooLarge {
+        /// Configured maximum frame count.
+        maximum: usize,
+        /// Received frame count.
+        actual: usize,
+    },
+}
+
+impl fmt::Display for VuProcessError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnevenChannels => {
+                formatter.write_str("left and right slices must have equal length")
+            }
+            Self::BlockTooLarge { maximum, actual } => {
+                write!(
+                    formatter,
+                    "block has {actual} frames; configured maximum is {maximum}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for VuProcessError {}
+
+/// Current display values for one [`VuMeter`] channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VuChannelSnapshot {
+    /// Ballistic detector level in dBFS.
+    pub level_dbfs: Option<f64>,
+    /// Ballistic detector level relative to configured calibration.
+    pub calibrated_db: Option<f64>,
+    /// Retained peak indicator in dBFS.
+    pub peak_hold_dbfs: Option<f64>,
+    /// Retained peak indicator relative to configured calibration.
+    pub peak_hold_calibrated_db: Option<f64>,
+}
+
+/// Current bounded stereo [`VuMeter`] state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VuSnapshot {
+    /// Active detector mode.
+    pub mode: VuMode,
+    /// Left channel display values.
+    pub left: VuChannelSnapshot,
+    /// Right channel display values.
+    pub right: VuChannelSnapshot,
+    /// Number of stereo frames accepted since construction or reset.
+    pub processed_frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct VuChannel {
+    detector: f64,
+    peak_hold: f64,
+    peak_hold_frames_remaining: u64,
+}
+
+impl VuChannel {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Realtime-safe stereo VU/RMS/peak meter.
+///
+/// Construction computes all rate-derived coefficients. Processing has no
+/// allocation, locking, formatting, or I/O. It observes audio only and never
+/// changes input samples.
+#[derive(Clone, Debug)]
+pub struct VuMeter {
+    config: VuConfig,
+    attack_coefficient: f64,
+    release_coefficient: f64,
+    peak_release_coefficient: f64,
+    peak_hold_frames: u64,
+    left: VuChannel,
+    right: VuChannel,
+    processed_frames: u64,
+}
+
+impl VuMeter {
+    /// Creates a meter from explicit fixed settings.
+    pub fn new(config: VuConfig) -> Result<Self, VuConfigError> {
+        validate_vu_config(config)?;
+        let mut meter = Self {
+            config,
+            attack_coefficient: 0.0,
+            release_coefficient: 0.0,
+            peak_release_coefficient: 0.0,
+            peak_hold_frames: 0,
+            left: VuChannel::default(),
+            right: VuChannel::default(),
+            processed_frames: 0,
+        };
+        meter.update_rate_constants();
+        Ok(meter)
+    }
+
+    /// Creates a meter with practical stereo defaults.
+    pub fn stereo(sample_rate: f64, max_block_frames: usize) -> Result<Self, VuConfigError> {
+        Self::new(VuConfig::recommended(sample_rate, max_block_frames)?)
+    }
+
+    /// Returns current fixed settings.
+    pub fn config(&self) -> VuConfig {
+        self.config
+    }
+
+    /// Changes detector mode and clears incompatible detector state.
+    pub fn set_mode(&mut self, mode: VuMode) {
+        if self.config.mode != mode {
+            self.config.mode = mode;
+            self.update_rate_constants();
+            self.left.reset();
+            self.right.reset();
+        }
+    }
+
+    /// Changes 0 VU/dBFS display reference without reallocating.
+    pub fn set_calibration_dbfs(&mut self, calibration_dbfs: f64) -> Result<(), VuConfigError> {
+        if !calibration_dbfs.is_finite() {
+            return Err(VuConfigError::InvalidCalibration);
+        }
+        self.config.calibration_dbfs = calibration_dbfs;
+        Ok(())
+    }
+
+    /// Changes RMS/peak detector attack and release without reallocating.
+    pub fn set_ballistics(
+        &mut self,
+        attack_seconds: f64,
+        release_seconds: f64,
+    ) -> Result<(), VuConfigError> {
+        validate_vu_ballistics(attack_seconds, release_seconds)?;
+        self.config.attack_seconds = attack_seconds;
+        self.config.release_seconds = release_seconds;
+        self.update_rate_constants();
+        Ok(())
+    }
+
+    /// Changes peak indicator hold duration without reallocating.
+    pub fn set_peak_hold_seconds(&mut self, peak_hold_seconds: f64) -> Result<(), VuConfigError> {
+        self.peak_hold_frames = vu_hold_frames(self.config.sample_rate, peak_hold_seconds)?;
+        self.config.peak_hold_seconds = peak_hold_seconds;
+        Ok(())
+    }
+
+    /// Processes one bounded planar stereo block without allocation.
+    pub fn process_stereo(&mut self, left: &[f32], right: &[f32]) -> Result<(), VuProcessError> {
+        if left.len() != right.len() {
+            return Err(VuProcessError::UnevenChannels);
+        }
+        if left.len() > self.config.max_block_frames {
+            return Err(VuProcessError::BlockTooLarge {
+                maximum: self.config.max_block_frames,
+                actual: left.len(),
+            });
+        }
+        let mode = self.config.mode;
+        let attack_coefficient = self.attack_coefficient;
+        let release_coefficient = self.release_coefficient;
+        let peak_release_coefficient = self.peak_release_coefficient;
+        let peak_hold_frames = self.peak_hold_frames;
+        for (&left, &right) in left.iter().zip(right) {
+            let left = if left.is_finite() {
+                f64::from(left)
+            } else {
+                0.0
+            };
+            let right = if right.is_finite() {
+                f64::from(right)
+            } else {
+                0.0
+            };
+            Self::process_channel_sample(
+                &mut self.left,
+                left,
+                mode,
+                attack_coefficient,
+                release_coefficient,
+                peak_release_coefficient,
+                peak_hold_frames,
+            );
+            Self::process_channel_sample(
+                &mut self.right,
+                right,
+                mode,
+                attack_coefficient,
+                release_coefficient,
+                peak_release_coefficient,
+                peak_hold_frames,
+            );
+        }
+        self.processed_frames = self.processed_frames.saturating_add(left.len() as u64);
+        Ok(())
+    }
+
+    /// Clears detector and peak-hold state without changing settings.
+    pub fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
+        self.processed_frames = 0;
+    }
+
+    /// Returns latest two-channel levels in constant time.
+    pub fn snapshot(&self) -> VuSnapshot {
+        VuSnapshot {
+            mode: self.config.mode,
+            left: self.channel_snapshot(self.left),
+            right: self.channel_snapshot(self.right),
+            processed_frames: self.processed_frames,
+        }
+    }
+
+    fn update_rate_constants(&mut self) {
+        let (attack_seconds, release_seconds) = match self.config.mode {
+            VuMode::Vu => (VU_STANDARD_RESPONSE_SECONDS, VU_STANDARD_RESPONSE_SECONDS),
+            VuMode::Rms | VuMode::Peak => (self.config.attack_seconds, self.config.release_seconds),
+        };
+        self.attack_coefficient =
+            sample_ballistics_coefficient(attack_seconds, self.config.sample_rate);
+        self.release_coefficient =
+            sample_ballistics_coefficient(release_seconds, self.config.sample_rate);
+        self.peak_release_coefficient = self.release_coefficient;
+        self.peak_hold_frames =
+            vu_hold_frames(self.config.sample_rate, self.config.peak_hold_seconds)
+                .expect("validated VU peak hold");
+    }
+
+    fn process_channel_sample(
+        channel: &mut VuChannel,
+        sample: f64,
+        mode: VuMode,
+        attack_coefficient: f64,
+        release_coefficient: f64,
+        peak_release_coefficient: f64,
+        peak_hold_frames: u64,
+    ) {
+        let target = match mode {
+            VuMode::Vu | VuMode::Rms => sample * sample,
+            VuMode::Peak => sample.abs(),
+        };
+        let coefficient = if target > channel.detector {
+            attack_coefficient
+        } else {
+            release_coefficient
+        };
+        channel.detector = target + (channel.detector - target) * coefficient;
+        let amplitude = Self::detector_amplitude(mode, channel.detector);
+        let held = Self::detector_amplitude(mode, channel.peak_hold);
+        if amplitude >= held {
+            channel.peak_hold = channel.detector;
+            channel.peak_hold_frames_remaining = peak_hold_frames;
+        } else if channel.peak_hold_frames_remaining > 0 {
+            channel.peak_hold_frames_remaining -= 1;
+        } else {
+            channel.peak_hold = target + (channel.peak_hold - target) * peak_release_coefficient;
+        }
+    }
+
+    fn detector_amplitude(mode: VuMode, detector: f64) -> f64 {
+        match mode {
+            VuMode::Vu | VuMode::Rms => detector.max(0.0).sqrt(),
+            VuMode::Peak => detector.max(0.0),
+        }
+    }
+
+    fn channel_snapshot(&self, channel: VuChannel) -> VuChannelSnapshot {
+        let level_dbfs =
+            amplitude_to_db(Self::detector_amplitude(self.config.mode, channel.detector));
+        let peak_hold_dbfs = amplitude_to_db(Self::detector_amplitude(
+            self.config.mode,
+            channel.peak_hold,
+        ));
+        VuChannelSnapshot {
+            level_dbfs,
+            calibrated_db: level_dbfs.map(|level| level - self.config.calibration_dbfs),
+            peak_hold_dbfs,
+            peak_hold_calibrated_db: peak_hold_dbfs
+                .map(|level| level - self.config.calibration_dbfs),
+        }
+    }
 }
 
 /// One loudness bin: how many blocks landed in it, and their exact energy.
@@ -610,6 +1030,30 @@ impl LoudnessHistogram {
             seen = next;
         }
         high.zip(low).map(|(high, low)| high - low)
+    }
+
+    fn copy_resampled(&self, destination: &mut [LoudnessHistogramBin]) -> usize {
+        let amount = destination.len().min(self.bins.len());
+        if amount == 0 {
+            return 0;
+        }
+        for (destination_index, output) in destination[..amount].iter_mut().enumerate() {
+            let first = destination_index * self.bins.len() / amount;
+            let end = ((destination_index + 1) * self.bins.len() / amount).max(first + 1);
+            let mut count = 0_u64;
+            let mut energy = 0.0_f64;
+            for bin in &self.bins[first..end] {
+                count = count.saturating_add(bin.count);
+                energy += bin.energy;
+            }
+            *output = LoudnessHistogramBin {
+                low_lufs: ABSOLUTE_GATE_LUFS + first as f64 * HISTOGRAM_BIN_LU,
+                high_lufs: ABSOLUTE_GATE_LUFS + end as f64 * HISTOGRAM_BIN_LU,
+                count,
+                mean_lufs: (count > 0).then(|| loudness_from_energy(energy / count as f64)),
+            };
+        }
+        amount
     }
 }
 
@@ -901,6 +1345,24 @@ impl LoudnessMeter {
         self.channels.len()
     }
 
+    /// Copies a fixed, resampled loudness histogram into caller-owned storage.
+    ///
+    /// The source has a constant number of 0.1 LU bins. Shorter destinations
+    /// merge adjacent bins from the full range; longer destinations receive
+    /// one source bin each and return the fixed source count. This method
+    /// never allocates, locks, or scans unbounded programme history.
+    pub fn copy_loudness_histogram(
+        &self,
+        kind: LoudnessHistogramKind,
+        destination: &mut [LoudnessHistogramBin],
+    ) -> usize {
+        let histogram = match kind {
+            LoudnessHistogramKind::Integrated => &self.integrated_histogram,
+            LoudnessHistogramKind::ShortTerm => &self.short_term_histogram,
+        };
+        histogram.copy_resampled(destination)
+    }
+
     fn push_energy(&mut self, energy: f64) {
         let leaving_short = (self.energy_count >= self.short_term_frames)
             .then_some(self.energy_ring[self.energy_cursor]);
@@ -971,6 +1433,50 @@ fn validate_sample_rate(sample_rate: f64) -> Result<(), ConfigError> {
         Ok(())
     } else {
         Err(ConfigError::InvalidSampleRate)
+    }
+}
+
+fn validate_vu_config(config: VuConfig) -> Result<(), VuConfigError> {
+    if !config.sample_rate.is_finite() || config.sample_rate < 8_000.0 {
+        return Err(VuConfigError::InvalidSampleRate);
+    }
+    if config.max_block_frames == 0 {
+        return Err(VuConfigError::InvalidBlockSize);
+    }
+    if !config.calibration_dbfs.is_finite() {
+        return Err(VuConfigError::InvalidCalibration);
+    }
+    validate_vu_ballistics(config.attack_seconds, config.release_seconds)?;
+    let _ = vu_hold_frames(config.sample_rate, config.peak_hold_seconds)?;
+    Ok(())
+}
+
+fn validate_vu_ballistics(attack_seconds: f64, release_seconds: f64) -> Result<(), VuConfigError> {
+    if attack_seconds.is_finite()
+        && release_seconds.is_finite()
+        && attack_seconds >= 0.0
+        && release_seconds >= 0.0
+    {
+        Ok(())
+    } else {
+        Err(VuConfigError::InvalidBallistics)
+    }
+}
+
+fn vu_hold_frames(sample_rate: f64, seconds: f64) -> Result<u64, VuConfigError> {
+    let frames = sample_rate * seconds;
+    if seconds.is_finite() && seconds >= 0.0 && frames.is_finite() && frames <= u64::MAX as f64 {
+        Ok(frames.round() as u64)
+    } else {
+        Err(VuConfigError::InvalidPeakHold)
+    }
+}
+
+fn sample_ballistics_coefficient(time_constant_seconds: f64, sample_rate: f64) -> f64 {
+    if time_constant_seconds == 0.0 {
+        0.0
+    } else {
+        (-1.0 / (time_constant_seconds * sample_rate)).exp()
     }
 }
 
@@ -1150,7 +1656,10 @@ mod tests {
         process_stereo_tone(&mut meter, 12.0, 1_000.0, -12.0, &mut cursor);
 
         let exact = meter.snapshot();
-        assert!(!exact.history_complete, "test premise: history should overflow");
+        assert!(
+            !exact.history_complete,
+            "test premise: history should overflow"
+        );
         assert!(
             meter.realtime_snapshot().integrated_lufs.is_some(),
             "the histogram is not bounded by history capacity"
@@ -1548,5 +2057,72 @@ mod tests {
         let snapshot = meter.snapshot();
         assert_eq!(snapshot.integrated_lufs, None);
         assert_eq!(snapshot.duration_seconds, 0.0);
+    }
+
+    #[test]
+    fn loudness_histogram_resamples_fixed_storage_without_history_scan() {
+        let mut meter = LoudnessMeter::with_history(SAMPLE_RATE, &[1.0, 1.0], BLOCK, 1).unwrap();
+        meter.integrated_histogram.push(energy_at_loudness(-32.0));
+        meter.integrated_histogram.push(energy_at_loudness(-20.0));
+        meter.integrated_histogram.push(energy_at_loudness(-20.0));
+        let mut output = [LoudnessHistogramBin::default(); 4];
+
+        assert_eq!(
+            meter.copy_loudness_histogram(LoudnessHistogramKind::Integrated, &mut output),
+            4
+        );
+        assert_eq!(output.iter().map(|bin| bin.count).sum::<u64>(), 3);
+        assert_eq!(output[0].low_lufs, LOUDNESS_HISTOGRAM_MIN_LUFS);
+        assert_close(
+            output[3].high_lufs,
+            LOUDNESS_HISTOGRAM_MAX_LUFS + LOUDNESS_HISTOGRAM_BIN_LU,
+            0.000_001,
+        );
+        assert!(
+            output
+                .iter()
+                .filter_map(|bin| bin.mean_lufs)
+                .any(|mean| mean > -21.0)
+        );
+    }
+
+    #[test]
+    fn vu_meter_reports_calibrated_rms_and_holds_peak() {
+        let mut meter = VuMeter::new(VuConfig {
+            sample_rate: SAMPLE_RATE,
+            max_block_frames: BLOCK,
+            mode: VuMode::Rms,
+            calibration_dbfs: -18.0,
+            attack_seconds: 0.0,
+            release_seconds: 0.3,
+            peak_hold_seconds: 0.2,
+        })
+        .unwrap();
+        let samples = [10.0_f32.powf(-18.0 / 20.0); BLOCK];
+        meter.process_stereo(&samples, &samples).unwrap();
+        let snapshot = meter.snapshot();
+        assert_close(snapshot.left.level_dbfs.unwrap(), -18.0, 0.01);
+        assert_close(snapshot.left.calibrated_db.unwrap(), 0.0, 0.01);
+
+        meter.process_stereo(&[0.0; BLOCK], &[0.0; BLOCK]).unwrap();
+        let held = meter.snapshot().left.peak_hold_dbfs.unwrap();
+        assert_close(held, -18.0, 0.01);
+        meter.set_mode(VuMode::Peak);
+        assert_eq!(meter.snapshot().left.level_dbfs, None);
+    }
+
+    #[test]
+    fn vu_meter_peak_mode_is_instant_and_rejects_bad_blocks() {
+        let mut meter = VuMeter::stereo(SAMPLE_RATE, 8).unwrap();
+        meter.set_mode(VuMode::Peak);
+        meter.set_ballistics(0.0, 0.0).unwrap();
+        meter.process_stereo(&[0.5; 8], &[0.25; 8]).unwrap();
+        assert_close(meter.snapshot().left.level_dbfs.unwrap(), -6.0206, 0.001);
+        assert_close(meter.snapshot().right.level_dbfs.unwrap(), -12.0412, 0.001);
+        assert_eq!(
+            meter.process_stereo(&[0.0; 8], &[0.0; 7]),
+            Err(VuProcessError::UnevenChannels)
+        );
+        assert_eq!(meter.snapshot().processed_frames, 8);
     }
 }

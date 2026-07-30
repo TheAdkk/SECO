@@ -28,7 +28,11 @@ pub struct ClapVersion {
 
 /// `CLAP_VERSION` — `version.h:23-36`. The header revision these mirrors
 /// were transcribed from.
-pub const CLAP_VERSION: ClapVersion = ClapVersion { major: 1, minor: 2, revision: 10 };
+pub const CLAP_VERSION: ClapVersion = ClapVersion {
+    major: 1,
+    minor: 2,
+    revision: 10,
+};
 
 // ------------------------------------------------------------------ id.h
 
@@ -287,20 +291,16 @@ pub struct ClapEventParamGesture {
 pub struct ClapInputEvents {
     pub ctx: *mut c_void,
     pub size: unsafe extern "C" fn(list: *const ClapInputEvents) -> u32,
-    pub get: unsafe extern "C" fn(
-        list: *const ClapInputEvents,
-        index: u32,
-    ) -> *const ClapEventHeader,
+    pub get:
+        unsafe extern "C" fn(list: *const ClapInputEvents, index: u32) -> *const ClapEventHeader,
 }
 
 /// `clap_output_events_t` — `events.h:355-363`. `try_push` copies the event.
 #[repr(C)]
 pub struct ClapOutputEvents {
     pub ctx: *mut c_void,
-    pub try_push: unsafe extern "C" fn(
-        list: *const ClapOutputEvents,
-        event: *const ClapEventHeader,
-    ) -> bool,
+    pub try_push:
+        unsafe extern "C" fn(list: *const ClapOutputEvents, event: *const ClapEventHeader) -> bool,
 }
 
 // -------------------------------------------------------- audio-buffer.h
@@ -400,11 +400,8 @@ pub struct ClapPluginAudioPorts {
 #[repr(C)]
 pub struct ClapIStream {
     pub ctx: *mut c_void,
-    pub read: unsafe extern "C" fn(
-        stream: *const ClapIStream,
-        buffer: *mut c_void,
-        size: u64,
-    ) -> i64,
+    pub read:
+        unsafe extern "C" fn(stream: *const ClapIStream, buffer: *mut c_void, size: u64) -> i64,
 }
 
 /// `clap_ostream_t` — `stream.h:29-34`. `write` returns bytes written or
@@ -412,11 +409,8 @@ pub struct ClapIStream {
 #[repr(C)]
 pub struct ClapOStream {
     pub ctx: *mut c_void,
-    pub write: unsafe extern "C" fn(
-        stream: *const ClapOStream,
-        buffer: *const c_void,
-        size: u64,
-    ) -> i64,
+    pub write:
+        unsafe extern "C" fn(stream: *const ClapOStream, buffer: *const c_void, size: u64) -> i64,
 }
 
 // ---------------------------------------------------------- ext/state.h
@@ -428,10 +422,8 @@ pub const CLAP_EXT_STATE: &CStr = c"clap.state";
 /// `clap_plugin_state_t` — `ext/state.h:24-34`. Both `[main-thread]`.
 #[repr(C)]
 pub struct ClapPluginState {
-    pub save:
-        unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapOStream) -> bool,
-    pub load:
-        unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapIStream) -> bool,
+    pub save: unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapOStream) -> bool,
+    pub load: unsafe extern "C" fn(plugin: *const ClapPlugin, stream: *const ClapIStream) -> bool,
 }
 
 /// `clap_host_state_t` — `ext/state.h:36-41`. Looked up under the same
@@ -514,35 +506,24 @@ pub struct ClapPluginGui {
     ) -> bool,
     pub destroy: unsafe extern "C" fn(plugin: *const ClapPlugin),
     pub set_scale: unsafe extern "C" fn(plugin: *const ClapPlugin, scale: f64) -> bool,
-    pub get_size: unsafe extern "C" fn(
-        plugin: *const ClapPlugin,
-        width: *mut u32,
-        height: *mut u32,
-    ) -> bool,
+    pub get_size:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, width: *mut u32, height: *mut u32) -> bool,
     pub can_resize: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
-    pub get_resize_hints: unsafe extern "C" fn(
-        plugin: *const ClapPlugin,
-        hints: *mut ClapGuiResizeHints,
-    ) -> bool,
-    pub adjust_size: unsafe extern "C" fn(
-        plugin: *const ClapPlugin,
-        width: *mut u32,
-        height: *mut u32,
-    ) -> bool,
-    pub set_size:
-        unsafe extern "C" fn(plugin: *const ClapPlugin, width: u32, height: u32) -> bool,
+    pub get_resize_hints:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, hints: *mut ClapGuiResizeHints) -> bool,
+    pub adjust_size:
+        unsafe extern "C" fn(plugin: *const ClapPlugin, width: *mut u32, height: *mut u32) -> bool,
+    pub set_size: unsafe extern "C" fn(plugin: *const ClapPlugin, width: u32, height: u32) -> bool,
     pub set_parent:
         unsafe extern "C" fn(plugin: *const ClapPlugin, window: *const ClapWindow) -> bool,
     pub set_transient:
         unsafe extern "C" fn(plugin: *const ClapPlugin, window: *const ClapWindow) -> bool,
-    pub suggest_title:
-        unsafe extern "C" fn(plugin: *const ClapPlugin, title: *const c_char),
+    pub suggest_title: unsafe extern "C" fn(plugin: *const ClapPlugin, title: *const c_char),
     pub show: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
     pub hide: unsafe extern "C" fn(plugin: *const ClapPlugin) -> bool,
 }
 
-/// `clap_host_gui_t` — `ext/gui.h:214-245`. Unused so far (Phase 6.1 has a
-/// fixed-size window); mirrored complete for later resize support.
+/// `clap_host_gui_t` — `ext/gui.h:214-245`.
 #[repr(C)]
 pub struct ClapHostGui {
     pub resize_hints_changed: unsafe extern "C" fn(host: *const ClapHost),
@@ -569,11 +550,8 @@ pub struct ClapPluginTimerSupport {
 /// `[main-thread]`; "30 Hz should be allowed" (`:19`).
 #[repr(C)]
 pub struct ClapHostTimerSupport {
-    pub register_timer: unsafe extern "C" fn(
-        host: *const ClapHost,
-        period_ms: u32,
-        timer_id: *mut ClapId,
-    ) -> bool,
+    pub register_timer:
+        unsafe extern "C" fn(host: *const ClapHost, period_ms: u32, timer_id: *mut ClapId) -> bool,
     pub unregister_timer: unsafe extern "C" fn(host: *const ClapHost, timer_id: ClapId) -> bool,
 }
 
@@ -682,10 +660,7 @@ pub type ClapParamClearFlags = u32;
 #[repr(C)]
 pub struct ClapHostParams {
     pub rescan: unsafe extern "C" fn(host: *const ClapHost, flags: ClapParamRescanFlags),
-    pub clear: unsafe extern "C" fn(
-        host: *const ClapHost,
-        param_id: ClapId,
-        flags: ClapParamClearFlags,
-    ),
+    pub clear:
+        unsafe extern "C" fn(host: *const ClapHost, param_id: ClapId, flags: ClapParamClearFlags),
     pub request_flush: unsafe extern "C" fn(host: *const ClapHost),
 }

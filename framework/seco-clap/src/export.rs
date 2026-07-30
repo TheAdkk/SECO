@@ -29,5 +29,9 @@ macro_rules! seco_export {
             <$plugin as $crate::__reexport::Plugin>::PARAMS.len() <= $crate::MAX_PARAMS,
             "seco: plugin declares more parameters than MAX_PARAMS",
         );
+        const _: () = assert!(
+            <$plugin as $crate::__reexport::Plugin>::SCOPE_SLOTS <= $crate::MAX_SCOPE_BUCKETS,
+            "seco: plugin declares more visualization slots than MAX_SCOPE_BUCKETS",
+        );
     };
 }

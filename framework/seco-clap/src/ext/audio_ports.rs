@@ -4,8 +4,7 @@
 //! choose its own layout, this becomes part of the `Plugin` trait.
 
 use crate::ffi::{
-    CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_STEREO, ClapAudioPortInfo, ClapPlugin,
-    ClapPluginAudioPorts,
+    CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_STEREO, ClapAudioPortInfo, ClapPlugin, ClapPluginAudioPorts,
 };
 use crate::util::fixed_cstr;
 

@@ -74,8 +74,10 @@ fn read_cloud(path: &str) -> Result<(String, Vec<[f32; 3]>), String> {
             MAX_BYTES / (1_024 * 1_024)
         ));
     }
-    let source = std::fs::read_to_string(file).map_err(|error| format!("Cannot read it: {error}"))?;
-    let mesh = mesh::load_obj(&source).map_err(|error| format!("That OBJ is malformed: {error}"))?;
+    let source =
+        std::fs::read_to_string(file).map_err(|error| format!("Cannot read it: {error}"))?;
+    let mesh =
+        mesh::load_obj(&source).map_err(|error| format!("That OBJ is malformed: {error}"))?;
     let cloud = mesh.unit_point_cloud(BUDGET);
     if cloud.is_empty() {
         return Err("That file has no usable geometry".to_owned());
@@ -147,7 +149,11 @@ mod tests {
         std::fs::write(&path, &source).unwrap();
 
         let answer = load(path.to_str().unwrap());
-        assert!(answer.starts_with("window.__neta_model&&"), "{}", &answer[..60]);
+        assert!(
+            answer.starts_with("window.__neta_model&&"),
+            "{}",
+            &answer[..60]
+        );
         assert!(answer.contains("\"box\""));
         // Three coordinates per point, comma separated, within budget.
         let body = answer.split('[').nth(1).unwrap();

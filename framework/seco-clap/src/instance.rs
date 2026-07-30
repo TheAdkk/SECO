@@ -25,16 +25,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use seco_core::__private::with_rt_context;
 use seco_core::{AudioBuffer, Plugin, Transport};
 
-use crate::{MAX_PARAMS, SCOPE_BUCKETS};
 use crate::ext::audio_ports;
 use crate::ext::params::ParamsImpl;
 use crate::ext::state::StateImpl;
 use crate::factory;
-#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
-use crate::ffi::{
-    CLAP_EVENT_IS_LIVE, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
-    ClapEventHeader, ClapEventParamGesture, ClapOutputEvents,
-};
 #[cfg(all(feature = "gui", target_os = "macos"))]
 use crate::ffi::ClapHostParams;
 use crate::ffi::{
@@ -46,6 +40,12 @@ use crate::ffi::{
     ClapEventParamValue, ClapEventTransport, ClapHost, ClapInputEvents, ClapPlugin,
     ClapPluginAudioPorts, ClapPluginParams, ClapPluginState, ClapProcess, ClapProcessStatus,
 };
+#[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+use crate::ffi::{
+    CLAP_EVENT_IS_LIVE, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+    ClapEventHeader, ClapEventParamGesture, ClapOutputEvents,
+};
+use crate::{MAX_PARAMS, MAX_SCOPE_BUCKETS};
 
 /// Channel capacity of the stack-allocated slice table in `plugin_process`.
 /// SECO v1 declares stereo ports, so 2 is exact; if a host hands over more
@@ -63,7 +63,7 @@ pub(crate) struct Instance<P: Plugin> {
     state: UnsafeCell<P>,
     /// Visualization buckets, written by the audio thread and read by the
     /// editor. Relaxed atomics on purpose: see `RtContext::set_scope`.
-    pub(crate) scope: [AtomicU32; SCOPE_BUCKETS],
+    pub(crate) scope: [AtomicU32; MAX_SCOPE_BUCKETS],
     /// The plugin's own state block and its hand-off to the audio thread.
     /// Adapter-owned for the same reason as `param_bits`: `clap.state` runs
     /// on the main thread while `process()` may be running. See
@@ -113,7 +113,14 @@ pub(crate) struct Instance<P: Plugin> {
 pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
     // seco_export! asserts this at compile time; direct users of this crate
     // (tests) get the check here.
-    assert!(P::PARAMS.len() <= MAX_PARAMS, "plugin declares more parameters than MAX_PARAMS");
+    assert!(
+        P::PARAMS.len() <= MAX_PARAMS,
+        "plugin declares more parameters than MAX_PARAMS"
+    );
+    assert!(
+        P::SCOPE_SLOTS <= MAX_SCOPE_BUCKETS,
+        "plugin declares more visualization slots than MAX_SCOPE_BUCKETS"
+    );
     // The host pointer is only consulted by the debug-build trace so far.
     #[cfg(not(debug_assertions))]
     let _ = host;
@@ -137,9 +144,15 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
             String::from("unknown-host")
         } else {
             // SAFETY: hosts provide NUL-terminated descriptor strings.
-            unsafe { CStr::from_ptr(name_ptr) }.to_string_lossy().into_owned()
+            unsafe { CStr::from_ptr(name_ptr) }
+                .to_string_lossy()
+                .into_owned()
         };
-        Some(crate::trace::spawn_logger(name, trace.clone(), trace_stop.clone()))
+        Some(crate::trace::spawn_logger(
+            name,
+            trace.clone(),
+            trace_stop.clone(),
+        ))
     };
 
     let instance = Box::new(Instance {
@@ -167,8 +180,10 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
         scope: std::array::from_fn(|_| AtomicU32::new(0)),
         plugin_state: crate::plugin_state::PluginStateSlot::new(),
         param_bits: std::array::from_fn(|index| {
-            let default =
-                P::PARAMS.get(index).map(|desc| desc.range.default_plain()).unwrap_or(0.0);
+            let default = P::PARAMS
+                .get(index)
+                .map(|desc| desc.range.default_plain())
+                .unwrap_or(0.0);
             AtomicU64::new(default.to_bits())
         }),
         #[cfg(all(feature = "gui", target_os = "macos"))]
@@ -269,7 +284,10 @@ pub(crate) unsafe fn apply_input_events<P: Plugin>(
 pub(crate) mod gui_queue {
     //! The GUI->host parameter pipe. See `Instance::gui_pending`.
 
-    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::{AcqRel, Relaxed, Release}};
+    use std::sync::atomic::{
+        AtomicU8, AtomicU64,
+        Ordering::{AcqRel, Relaxed, Release},
+    };
 
     /// Sticky pending bits. VALUE coalesces; BEGIN/END are edges.
     pub(crate) const VALUE: u8 = 1 << 0;
@@ -474,10 +492,7 @@ pub(crate) unsafe fn queue_gui_param_change<P: Plugin>(
 /// SAFETY contract: runs inside process() or params.flush() (the single
 /// consumer); `out`, if non-null, valid for the call.
 #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
-pub(crate) unsafe fn drain_gui_params<P: Plugin>(
-    inst: &Instance<P>,
-    out: *const ClapOutputEvents,
-) {
+pub(crate) unsafe fn drain_gui_params<P: Plugin>(inst: &Instance<P>, out: *const ClapOutputEvents) {
     use gui_queue::{BEGIN, END, VALUE};
     for (index, pending) in inst.gui_pending.iter().enumerate().take(P::PARAMS.len()) {
         let (flags, value) = pending.take();
@@ -760,7 +775,10 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
         // Some hosts mirror one buffer into several channel slots. A second
         // `&mut` over the same memory is aliasing UB (and would double-apply
         // the gain), so the shared buffer is processed exactly once.
-        if channels[..used].iter().any(|existing| ptr::eq(existing.as_ptr(), out_ptr)) {
+        if channels[..used]
+            .iter()
+            .any(|existing| ptr::eq(existing.as_ptr(), out_ptr))
+        {
             break;
         }
         let in_ptr = input
@@ -793,21 +811,33 @@ unsafe extern "C" fn plugin_process<P: Plugin>(
     // Block-start snapshot: the plugin sees one coherent value per param for
     // the whole block (events above landed first). Stack array, no alloc.
     let mut params_snapshot = [0.0_f64; MAX_PARAMS];
-    for (slot, bits) in params_snapshot.iter_mut().zip(&inst.param_bits).take(P::PARAMS.len()) {
+    for (slot, bits) in params_snapshot
+        .iter_mut()
+        .zip(&inst.param_bits)
+        .take(P::PARAMS.len())
+    {
         *slot = f64::from_bits(bits.load(Relaxed));
     }
     // SAFETY (state): `[audio-thread]` — at most one audio thread exists per
     // instance (thread-check.h:30-40); main-thread param callbacks touch only
     // atomics, never `state`. Exclusive.
     let state = unsafe { &mut *inst.state.get() };
-    with_rt_context(transport, &params_snapshot[..P::PARAMS.len()], &inst.scope, |rt| {
-        // A state block published since the last block lands here, on the
-        // audio thread, before the plugin processes with it — see
-        // `plugin_state` for why the main thread cannot deliver it itself.
-        // SAFETY: `[audio-thread]`, the single consumer.
-        unsafe { inst.plugin_state.take_with(|bytes| state.apply_state(bytes, rt)) };
-        state.process(&mut audio, rt)
-    });
+    with_rt_context(
+        transport,
+        &params_snapshot[..P::PARAMS.len()],
+        &inst.scope[..P::SCOPE_SLOTS],
+        |rt| {
+            // A state block published since the last block lands here, on the
+            // audio thread, before the plugin processes with it — see
+            // `plugin_state` for why the main thread cannot deliver it itself.
+            // SAFETY: `[audio-thread]`, the single consumer.
+            unsafe {
+                inst.plugin_state
+                    .take_with(|bytes| state.apply_state(bytes, rt))
+            };
+            state.process(&mut audio, rt)
+        },
+    );
     CLAP_PROCESS_CONTINUE
 }
 
@@ -874,11 +904,22 @@ mod tests {
         const VERSION: &'static str = "0.0.0";
         const PARAMS: &'static [ParamDesc] = &[ParamDesc {
             name: "Test",
-            range: ParamRange::Continuous { min: 0.0, max: 1.0, default: 0.5, unit: "", decimals: 2 },
+            range: ParamRange::Continuous {
+                min: 0.0,
+                max: 1.0,
+                default: 0.5,
+                unit: "",
+                decimals: 2,
+            },
         }];
+        const SCOPE_SLOTS: usize = 3;
 
         fn new() -> Self {
-            HalfGain { last_transport: None, applied: None, applications: 0 }
+            HalfGain {
+                last_transport: None,
+                applied: None,
+                applications: 0,
+            }
         }
 
         fn apply_state(&mut self, state: &[u8], _rt: &RtContext) {
@@ -890,6 +931,10 @@ mod tests {
 
         fn process(&mut self, audio: &mut AudioBuffer, rt: &RtContext) {
             self.last_transport = Some(*rt.transport());
+            rt.set_scope(2, 0.25);
+            // The adapter must hand only the configured prefix to the audio
+            // thread. This write is intentionally one past HalfGain's view.
+            rt.set_scope(3, 0.75);
             for channel in audio.channels_mut() {
                 for sample in channel {
                     *sample *= 0.5;
@@ -971,7 +1016,9 @@ mod tests {
         unsafe {
             let source = &mut *(*stream).ctx.cast::<LoadSource>();
             // Deliberately dribble: 7 bytes at a time exercises the loop.
-            let n = (source.bytes.len() - source.offset).min(size as usize).min(7);
+            let n = (source.bytes.len() - source.offset)
+                .min(size as usize)
+                .min(7);
             std::ptr::copy_nonoverlapping(
                 source.bytes.as_ptr().add(source.offset),
                 buffer.cast::<u8>(),
@@ -984,20 +1031,22 @@ mod tests {
 
     fn save_state(plugin: *const ClapPlugin) -> Vec<u8> {
         let mut sink = SaveSink(Vec::new());
-        let stream =
-            ClapOStream { ctx: (&raw mut sink).cast(), write: sink_write };
-        // SAFETY: live instance; the stream outlives the call.
-        let ok = unsafe {
-            (StateImpl::<HalfGain>::VTABLE.save)(plugin, &raw const stream)
+        let stream = ClapOStream {
+            ctx: (&raw mut sink).cast(),
+            write: sink_write,
         };
+        // SAFETY: live instance; the stream outlives the call.
+        let ok = unsafe { (StateImpl::<HalfGain>::VTABLE.save)(plugin, &raw const stream) };
         assert!(ok, "save failed");
         sink.0
     }
 
     fn load_state(plugin: *const ClapPlugin, bytes: Vec<u8>) -> bool {
         let mut source = LoadSource { bytes, offset: 0 };
-        let stream =
-            ClapIStream { ctx: (&raw mut source).cast(), read: source_read };
+        let stream = ClapIStream {
+            ctx: (&raw mut source).cast(),
+            read: source_read,
+        };
         // SAFETY: live instance; the stream outlives the call.
         unsafe { (StateImpl::<HalfGain>::VTABLE.load)(plugin, &raw const stream) }
     }
@@ -1048,6 +1097,18 @@ mod tests {
         unsafe { ((*loader).destroy)(loader) };
     }
 
+    #[test]
+    fn plugin_receives_only_its_declared_scope_slots() {
+        let plugin = create::<HalfGain>(ptr::null());
+        run_one_block(plugin);
+        // SAFETY: single-threaded test; the instance remains live.
+        let inst = unsafe { shared::<HalfGain>(plugin) };
+        assert_eq!(f32::from_bits(inst.scope[2].load(Relaxed)), 0.25);
+        assert_eq!(f32::from_bits(inst.scope[3].load(Relaxed)), 0.0);
+        // SAFETY: created above, not used again.
+        unsafe { ((*plugin).destroy)(plugin) };
+    }
+
     /// The editor's wire protocol, tested here rather than next to the
     /// WebKit plumbing so it runs on every platform.
     #[test]
@@ -1070,7 +1131,10 @@ mod tests {
             parse_msg("msg save kick 4x4|0,1"),
             Some(EditorMsg::Message("save kick 4x4|0,1"))
         ));
-        assert!(matches!(parse_msg("msg list"), Some(EditorMsg::Message("list"))));
+        assert!(matches!(
+            parse_msg("msg list"),
+            Some(EditorMsg::Message("list"))
+        ));
 
         // Parameters still take their own path.
         assert!(matches!(
@@ -1102,7 +1166,10 @@ mod tests {
         run_one_block(plugin);
 
         // SAFETY: single-threaded test, no other borrow live.
-        assert_eq!(unsafe { state_of(plugin) }.applied.as_deref(), Some(&b"0.1,0.2,0.3"[..]));
+        assert_eq!(
+            unsafe { state_of(plugin) }.applied.as_deref(),
+            Some(&b"0.1,0.2,0.3"[..])
+        );
 
         // And it is what `clap.state` saves: an editor edit survives the
         // session even though the plugin never handed anything back.
@@ -1133,7 +1200,10 @@ mod tests {
         // SAFETY: single-threaded test, no other borrow live.
         let state = unsafe { state_of(plugin) };
         assert_eq!(state.applied.as_deref(), Some(&b"good"[..]));
-        assert_eq!(state.applications, 1, "nothing new should have been delivered");
+        assert_eq!(
+            state.applications, 1,
+            "nothing new should have been delivered"
+        );
         // SAFETY: created above, not used again.
         unsafe { ((*plugin).destroy)(plugin) };
     }
@@ -1157,8 +1227,7 @@ mod tests {
             _host: *const ClapHost,
             id: *const c_char,
         ) -> *const std::ffi::c_void {
-            static HOST_STATE: crate::ffi::ClapHostState =
-                crate::ffi::ClapHostState { mark_dirty };
+            static HOST_STATE: crate::ffi::ClapHostState = crate::ffi::ClapHostState { mark_dirty };
             // SAFETY: the plugin passes a NUL-terminated extension id.
             if unsafe { CStr::from_ptr(id) } == crate::ffi::CLAP_EXT_STATE {
                 (&raw const HOST_STATE).cast()
@@ -1193,7 +1262,11 @@ mod tests {
         let too_big = vec![b'9'; crate::MAX_PLUGIN_STATE + 1];
         // SAFETY: as above.
         unsafe { publish_editor_state::<HalfGain>(plugin, &too_big) };
-        assert_eq!(DIRTY.load(Relaxed), 1, "a dropped block must not mark the session dirty");
+        assert_eq!(
+            DIRTY.load(Relaxed),
+            1,
+            "a dropped block must not mark the session dirty"
+        );
 
         // SAFETY: created above, not used again.
         unsafe { ((*plugin).destroy)(plugin) };
@@ -1220,7 +1293,11 @@ mod tests {
 
         // SAFETY: single-threaded test, no other borrow live.
         let state = unsafe { state_of(plugin) };
-        assert_eq!(state.applied.as_deref(), Some(&[][..]), "the old block must be cleared");
+        assert_eq!(
+            state.applied.as_deref(),
+            Some(&[][..]),
+            "the old block must be cleared"
+        );
         assert_eq!(state.applications, 2);
         // SAFETY: created above, not used again.
         unsafe { ((*plugin).destroy)(plugin) };
@@ -1251,7 +1328,11 @@ mod tests {
 
         run_one_block(plugin);
         // SAFETY: single-threaded test, no other borrow live.
-        assert_eq!(unsafe { state_of(plugin) }.applications, 0, "a failed load must publish nothing");
+        assert_eq!(
+            unsafe { state_of(plugin) }.applications,
+            0,
+            "a failed load must publish nothing"
+        );
         // SAFETY: created above, not used again.
         unsafe { ((*plugin).destroy)(plugin) };
     }
@@ -1267,8 +1348,13 @@ mod tests {
         let mut out_ptrs = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
         let in_buf = stereo_buffer(&mut in_ptrs);
         let mut out_buf = stereo_buffer(&mut out_ptrs);
-        let process =
-            process_struct(64, Some(&raw const in_buf), &raw mut out_buf, ptr::null(), ptr::null());
+        let process = process_struct(
+            64,
+            Some(&raw const in_buf),
+            &raw mut out_buf,
+            ptr::null(),
+            ptr::null(),
+        );
 
         // SAFETY: `plugin` is a live instance from `create`; `process` and
         // everything it references outlive the call.
@@ -1299,8 +1385,13 @@ mod tests {
         let mut out_ptrs = [lp, rp];
         let in_buf = stereo_buffer(&mut in_ptrs);
         let mut out_buf = stereo_buffer(&mut out_ptrs);
-        let process =
-            process_struct(32, Some(&raw const in_buf), &raw mut out_buf, ptr::null(), ptr::null());
+        let process = process_struct(
+            32,
+            Some(&raw const in_buf),
+            &raw mut out_buf,
+            ptr::null(),
+            ptr::null(),
+        );
 
         // SAFETY: as in `out_of_place_copies_input_then_processes`.
         let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
@@ -1382,8 +1473,7 @@ mod tests {
             tsig_num: 6,
             tsig_denom: 8,
         };
-        let process =
-            process_struct(8, None, &raw mut out_buf, &raw const tp, ptr::null());
+        let process = process_struct(8, None, &raw mut out_buf, &raw const tp, ptr::null());
 
         // SAFETY: as in `out_of_place_copies_input_then_processes`.
         let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
@@ -1427,7 +1517,11 @@ mod tests {
     /// A minimal host-side event list: `ctx` points at the pointer array.
     unsafe extern "C" fn list_size(list: *const ClapInputEvents) -> u32 {
         // SAFETY: `ctx` points to the Vec set up by the test.
-        let events = unsafe { &*(*list).ctx.cast::<Vec<*const crate::ffi::ClapEventHeader>>() };
+        let events = unsafe {
+            &*(*list)
+                .ctx
+                .cast::<Vec<*const crate::ffi::ClapEventHeader>>()
+        };
         events.len() as u32
     }
 
@@ -1437,7 +1531,11 @@ mod tests {
     ) -> *const crate::ffi::ClapEventHeader {
         // SAFETY: as in `list_size`; the caller-side contract is
         // `index < size()`, and the test upholds it.
-        let events = unsafe { &*(*list).ctx.cast::<Vec<*const crate::ffi::ClapEventHeader>>() };
+        let events = unsafe {
+            &*(*list)
+                .ctx
+                .cast::<Vec<*const crate::ffi::ClapEventHeader>>()
+        };
         events[index as usize]
     }
 
@@ -1468,8 +1566,8 @@ mod tests {
             key: -1,
             value: 0.25,
         };
-        let misaligned = unsafe { backing.as_mut_ptr().cast::<u8>().add(4) }
-            .cast::<ClapEventParamValue>();
+        let misaligned =
+            unsafe { backing.as_mut_ptr().cast::<u8>().add(4) }.cast::<ClapEventParamValue>();
         // SAFETY: offset 4 + size 56 <= 64 bytes of backing; unaligned write
         // is explicitly fine.
         unsafe { misaligned.write_unaligned(event) };
@@ -1503,8 +1601,13 @@ mod tests {
         let mut out_ptrs = [mp, mp];
         let in_buf = stereo_buffer(&mut in_ptrs);
         let mut out_buf = stereo_buffer(&mut out_ptrs);
-        let process =
-            process_struct(32, Some(&raw const in_buf), &raw mut out_buf, ptr::null(), ptr::null());
+        let process = process_struct(
+            32,
+            Some(&raw const in_buf),
+            &raw mut out_buf,
+            ptr::null(),
+            ptr::null(),
+        );
 
         // SAFETY: as in `out_of_place_copies_input_then_processes`.
         let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
@@ -1543,15 +1646,13 @@ mod tests {
             key: -1,
             value: 0.75,
         };
-        let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> =
-            vec![(&raw const event).cast()];
+        let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> = vec![(&raw const event).cast()];
         let in_events = ClapInputEvents {
             ctx: (&raw mut ptrs).cast(),
             size: list_size,
             get: list_get,
         };
-        let process =
-            process_struct(8, None, &raw mut out_buf, ptr::null(), &raw const in_events);
+        let process = process_struct(8, None, &raw mut out_buf, ptr::null(), &raw const in_events);
 
         // SAFETY: as in `out_of_place_copies_input_then_processes`.
         unsafe { ((*plugin).process)(plugin, &raw const process) };
@@ -1563,13 +1664,8 @@ mod tests {
         // And the params vtable must report the same through get_value.
         let mut read_back = 0.0_f64;
         // SAFETY: live instance; out pointer valid for one write.
-        let ok = unsafe {
-            (ParamsImpl::<HalfGain>::VTABLE.get_value)(
-                plugin,
-                0,
-                &raw mut read_back,
-            )
-        };
+        let ok =
+            unsafe { (ParamsImpl::<HalfGain>::VTABLE.get_value)(plugin, 0, &raw mut read_back) };
         assert!(ok);
         assert_eq!(read_back, 0.75);
         // SAFETY: created above; not used again after this call.
@@ -1615,11 +1711,7 @@ mod tests {
                     // SAFETY: live instance; concurrent with `process()` by
                     // design, which the spec allows for `get_value`.
                     let ok = unsafe {
-                        (ParamsImpl::<HalfGain>::VTABLE.get_value)(
-                            plugin,
-                            0,
-                            &raw mut value,
-                        )
+                        (ParamsImpl::<HalfGain>::VTABLE.get_value)(plugin, 0, &raw mut value)
                     };
                     assert!(ok);
                     assert!(
@@ -1650,8 +1742,7 @@ mod tests {
                 key: -1,
                 value: if i % 2 == 0 { 0.25 } else { 0.75 },
             };
-            let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> =
-                vec![(&raw const event).cast()];
+            let mut ptrs: Vec<*const crate::ffi::ClapEventHeader> = vec![(&raw const event).cast()];
             let in_events = ClapInputEvents {
                 ctx: (&raw mut ptrs).cast(),
                 size: list_size,
@@ -1659,8 +1750,13 @@ mod tests {
             };
             let mut out_ptrs = [l.as_mut_ptr(), r.as_mut_ptr()];
             let mut out_buf = stereo_buffer(&mut out_ptrs);
-            let process =
-                process_struct(16, None, &raw mut out_buf, ptr::null(), &raw const in_events);
+            let process = process_struct(
+                16,
+                None,
+                &raw mut out_buf,
+                ptr::null(),
+                &raw const in_events,
+            );
             // SAFETY: live instance; audio-thread role held by this thread
             // only, per the test's structure.
             let status = unsafe { ((*plugin).process)(plugin, &raw const process) };
@@ -1703,7 +1799,10 @@ mod tests {
     }
 
     fn out_list(sink: &mut Collected) -> ClapOutputEvents {
-        ClapOutputEvents { ctx: (sink as *mut Collected).cast(), try_push: collect_push }
+        ClapOutputEvents {
+            ctx: (sink as *mut Collected).cast(),
+            try_push: collect_push,
+        }
     }
 
     fn run_silent_block(plugin: *const ClapPlugin, out: *const ClapOutputEvents) {
@@ -1747,7 +1846,9 @@ mod tests {
         );
         assert_eq!(sink.events[1].2, 0.75);
         assert!(
-            sink.events.iter().all(|e| e.3 & crate::ffi::CLAP_EVENT_IS_LIVE != 0),
+            sink.events
+                .iter()
+                .all(|e| e.3 & crate::ffi::CLAP_EVENT_IS_LIVE != 0),
             "GUI edits are live user events"
         );
         // SAFETY: created above; not used again after this call.
@@ -1772,9 +1873,17 @@ mod tests {
         let out = out_list(&mut sink);
         run_silent_block(plugin, &raw const out);
 
-        let values: Vec<f64> =
-            sink.events.iter().filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE).map(|e| e.2).collect();
-        assert_eq!(values, vec![1.0], "must coalesce to a single latest-value event");
+        let values: Vec<f64> = sink
+            .events
+            .iter()
+            .filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE)
+            .map(|e| e.2)
+            .collect();
+        assert_eq!(
+            values,
+            vec![1.0],
+            "must coalesce to a single latest-value event"
+        );
         // SAFETY: created above; not used again after this call.
         unsafe { ((*plugin).destroy)(plugin) };
     }
@@ -1788,19 +1897,30 @@ mod tests {
         // SAFETY: as above.
         unsafe { queue_gui_param_change::<HalfGain>(plugin, GuiMsg::Set(0, 0.25)) };
 
-        let mut sink = Collected { reject: true, ..Default::default() };
+        let mut sink = Collected {
+            reject: true,
+            ..Default::default()
+        };
         let out = out_list(&mut sink);
         run_silent_block(plugin, &raw const out);
         // SAFETY: live instance.
         let inst = unsafe { shared::<HalfGain>(plugin) };
-        assert_eq!(f64::from_bits(inst.param_bits[0].load(Relaxed)), 0.25, "audio first");
+        assert_eq!(
+            f64::from_bits(inst.param_bits[0].load(Relaxed)),
+            0.25,
+            "audio first"
+        );
         assert!(sink.events.is_empty());
 
         sink.reject = false;
         let out = out_list(&mut sink);
         run_silent_block(plugin, &raw const out);
-        let values: Vec<f64> =
-            sink.events.iter().filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE).map(|e| e.2).collect();
+        let values: Vec<f64> = sink
+            .events
+            .iter()
+            .filter(|e| e.0 == CLAP_EVENT_PARAM_VALUE)
+            .map(|e| e.2)
+            .collect();
         assert_eq!(values, vec![0.25], "retried on the next drain");
         // SAFETY: created above; not used again after this call.
         unsafe { ((*plugin).destroy)(plugin) };
@@ -1850,7 +1970,10 @@ mod tests {
         producer.join().unwrap();
         for (type_, _, value, _) in &sink.events {
             if *type_ == CLAP_EVENT_PARAM_VALUE {
-                assert!((0.0..=1.0).contains(value), "torn or corrupt value: {value}");
+                assert!(
+                    (0.0..=1.0).contains(value),
+                    "torn or corrupt value: {value}"
+                );
             }
         }
         // SAFETY: created above, threads joined; not used again.

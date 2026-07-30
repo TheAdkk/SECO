@@ -18,8 +18,15 @@
 pub struct EditorPage {
     /// The complete HTML document.
     pub html: &'static str,
-    /// Logical width in pixels. The editor is fixed-size for now.
+    /// Logical width in pixels the editor opens at.
     pub width: u32,
-    /// Logical height in pixels.
+    /// Logical height in pixels the editor opens at.
     pub height: u32,
+    /// Smallest size the page still reads at, or `None` for an editor the
+    /// host must not resize.
+    ///
+    /// A host asked to resize will clamp to this, so it is a promise about
+    /// the page rather than a hint: below it the layout is expected to be
+    /// wrong, not merely tight.
+    pub minimum: Option<(u32, u32)>,
 }

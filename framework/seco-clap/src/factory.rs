@@ -82,7 +82,11 @@ pub(crate) fn descriptor_for<P: Plugin>() -> &'static ClapPluginDescriptor {
             description: strings[4].as_ptr(),
             features: features.as_ptr(),
         };
-        DescriptorStorage { _strings: strings, _features: features, descriptor }
+        DescriptorStorage {
+            _strings: strings,
+            _features: features,
+            descriptor,
+        }
     });
     &storage.descriptor
 }
@@ -97,7 +101,11 @@ unsafe extern "C" fn get_plugin_descriptor<P: Plugin>(
     _factory: *const ClapPluginFactory,
     index: u32,
 ) -> *const ClapPluginDescriptor {
-    if index == 0 { descriptor_for::<P>() } else { ptr::null() }
+    if index == 0 {
+        descriptor_for::<P>()
+    } else {
+        ptr::null()
+    }
 }
 
 /// `factory/plugin-factory.h:30-38`. Host callbacks are forbidden in here;

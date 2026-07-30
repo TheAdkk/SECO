@@ -35,7 +35,7 @@
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{
-    AtomicU8,
+    AtomicU8, AtomicU64,
     Ordering::{AcqRel, Relaxed},
 };
 
@@ -55,7 +55,10 @@ struct Chunk {
 
 impl Chunk {
     const fn empty() -> Self {
-        Self { bytes: [0; MAX_PLUGIN_STATE], len: 0 }
+        Self {
+            bytes: [0; MAX_PLUGIN_STATE],
+            len: 0,
+        }
     }
 
     fn copy_from(&mut self, source: &[u8]) {
@@ -89,6 +92,9 @@ pub(crate) struct PluginStateSlot {
     back: AtomicU8,
     /// The slot the consumer reads from. Consumer-only, same reasoning.
     front: AtomicU8,
+    /// Main-thread revision of `latest`. GUI code uses this to skip parsing
+    /// an unchanged editor state block every refresh tick.
+    revision: AtomicU64,
 }
 
 impl PluginStateSlot {
@@ -103,6 +109,7 @@ impl PluginStateSlot {
             shared: AtomicU8::new(2),
             back: AtomicU8::new(0),
             front: AtomicU8::new(1),
+            revision: AtomicU64::new(0),
         }
     }
 
@@ -133,6 +140,7 @@ impl PluginStateSlot {
         // it must happen-before that write.
         let previous = self.shared.swap(back as u8 | UNREAD, AcqRel);
         self.back.store(previous & INDEX_MASK, Relaxed);
+        self.revision.fetch_add(1, Relaxed);
         true
     }
 
@@ -144,6 +152,13 @@ impl PluginStateSlot {
     pub(crate) unsafe fn with_latest<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         // SAFETY: main-thread exclusivity per this function's contract.
         f(unsafe { (*self.latest.get()).as_slice() })
+    }
+
+    /// Revision of the main-thread master copy. It is only a cache key; the
+    /// state hand-off itself remains governed by `shared` above.
+    #[cfg(any(test, all(feature = "gui", target_os = "macos")))]
+    pub(crate) fn latest_revision(&self) -> u64 {
+        self.revision.load(Relaxed)
     }
 
     /// Runs `f` on the newly published block, if there is one. Returns
@@ -185,7 +200,10 @@ mod tests {
         let slot = PluginStateSlot::new();
         // SAFETY: single-threaded test.
         assert!(unsafe { slot.take_with(|_| ()) }.is_none());
-        assert_eq!(unsafe { slot.with_latest(<[u8]>::to_vec) }, Vec::<u8>::new());
+        assert_eq!(
+            unsafe { slot.with_latest(<[u8]>::to_vec) },
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
@@ -200,6 +218,21 @@ mod tests {
             assert!(slot.take_with(|_| ()).is_none());
             assert_eq!(slot.with_latest(<[u8]>::to_vec), b"curve".to_vec());
         }
+    }
+
+    #[test]
+    fn revision_changes_only_for_accepted_publishes() {
+        let slot = PluginStateSlot::new();
+        assert_eq!(slot.latest_revision(), 0);
+        // SAFETY: single-threaded test.
+        unsafe {
+            assert!(slot.publish(b"first"));
+            assert_eq!(slot.latest_revision(), 1);
+            assert!(!slot.publish(&[0_u8; MAX_PLUGIN_STATE + 1]));
+            assert_eq!(slot.latest_revision(), 1);
+            assert!(slot.publish(b"second"));
+        }
+        assert_eq!(slot.latest_revision(), 2);
     }
 
     /// A consumer that misses a block must still end up with the newest
@@ -239,7 +272,10 @@ mod tests {
             slot.publish(b"keep me");
             slot.take_with(|_| ());
             assert!(!slot.publish(&[0_u8; MAX_PLUGIN_STATE + 1]));
-            assert!(slot.take_with(|_| ()).is_none(), "a refused publish must not signal");
+            assert!(
+                slot.take_with(|_| ()).is_none(),
+                "a refused publish must not signal"
+            );
             assert_eq!(slot.with_latest(<[u8]>::to_vec), b"keep me".to_vec());
         }
     }

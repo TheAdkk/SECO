@@ -19,7 +19,13 @@ use crate::library;
 
 /// The editor Zape declares as `Plugin::EDITOR`. Fixed logical size (cocoa
 /// is logical-pixel, ext/gui.h:56-57).
-pub(crate) const PAGE: EditorPage = EditorPage { html: HTML, width: 760, height: 470 };
+// Fixed size: the skins are laid out against these proportions.
+pub(crate) const PAGE: EditorPage = EditorPage {
+    html: HTML,
+    width: 760,
+    height: 470,
+    minimum: None,
+};
 
 /// Resolution of the curves sent to the page. Independent of the audio
 /// table's own size: this is drawing, not sound.
@@ -37,7 +43,12 @@ const CURVE_POINTS: usize = 256;
 /// [`REFERENCE_BPM`]; the shape at the session's real tempo differs only in
 /// how wide that entry looks.
 pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
-    let rate = (params.get(crate::PARAM_RATE).copied().unwrap_or(0.0).round().max(0.0) as usize)
+    let rate = (params
+        .get(crate::PARAM_RATE)
+        .copied()
+        .unwrap_or(0.0)
+        .round()
+        .max(0.0) as usize)
         .min(crate::RATE_BEATS.len() - 1);
     // One snippet per rate, built at most once: the adapter asks for this at
     // the editor's refresh rate and only pushes it when it changes.
@@ -52,8 +63,7 @@ pub(crate) fn script(params: &[f64], state: &[u8]) -> Option<String> {
     let custom = CustomCurve::parse(state).to_wire();
     // The page redraws the drawn curve itself, so it needs the same entry
     // fade width the shipped shapes were sampled with.
-    let attack = (crate::ATTACK_SECONDS
-        / (crate::RATE_BEATS[rate] * 60.0 / REFERENCE_BPM)) as f32;
+    let attack = (crate::ATTACK_SECONDS / (crate::RATE_BEATS[rate] * 60.0 / REFERENCE_BPM)) as f32;
     // The skin rides along too: it is a preference read from disk, so the
     // page cannot know it until the plugin says so, and this snippet is
     // already the one the adapter only pushes when something changed.
@@ -80,7 +90,9 @@ pub(crate) fn frame(scope: &[f32]) -> Option<String> {
         }
         points.push_str(&format!("{value:.2}"));
     }
-    Some(format!("window.__seco_scope && window.__seco_scope([{points}]);"))
+    Some(format!(
+        "window.__seco_scope && window.__seco_scope([{points}]);"
+    ))
 }
 
 /// The skins the page ships, and the one used when nothing is remembered.
@@ -174,7 +186,9 @@ fn presets_js() -> String {
 /// `library::sanitize` already reduced them to letters, digits, space, dash
 /// and underscore, so this is the belt to that pair of braces.
 fn escape(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+    text.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
 }
 
 /// Tempo assumed when drawing. The plugin uses the host's.
@@ -1518,7 +1532,11 @@ mod tests {
                 desc.range.default_plain()
             };
             let (min, max) = (desc.range.min(), desc.range.max());
-            let norm = if max > min { (value - min) / (max - min) } else { 0.0 };
+            let norm = if max > min {
+                (value - min) / (max - min)
+            } else {
+                0.0
+            };
             let (kind, text, opts) = match &desc.range {
                 ParamRange::Continuous { unit, decimals, .. } => (
                     "c",
@@ -1599,18 +1617,30 @@ mod tests {
         *SKIN.lock().unwrap() = None;
 
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
-        assert!(js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")), "skin missing");
+        assert!(
+            js.contains(&format!("__seco_skin(\"{DEFAULT_SKIN}\")")),
+            "skin missing"
+        );
 
-        assert!(message("skin jukebox").is_none(), "the page already applied it");
+        assert!(
+            message("skin jukebox").is_none(),
+            "the page already applied it"
+        );
         let js = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("script");
         assert!(js.contains("__seco_skin(\"jukebox\")"), "skin missing");
-        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("jukebox"));
+        assert_eq!(
+            crate::library::read_setting("skin").as_deref(),
+            Some("jukebox")
+        );
 
         // A name the plugin does not ship goes nowhere: it ends up in a
         // stylesheet selector and in a file.
         message("skin ../../etc/passwd");
         message("skin \"><script>");
-        assert_eq!(crate::library::read_setting("skin").as_deref(), Some("jukebox"));
+        assert_eq!(
+            crate::library::read_setting("skin").as_deref(),
+            Some("jukebox")
+        );
         *SKIN.lock().unwrap() = None;
     }
 
@@ -1628,7 +1658,10 @@ mod tests {
         assert!(saved.contains("kick 4x4"), "{saved}");
         // The answer carries the points, so a card can draw the shape
         // instead of only naming it.
-        assert!(saved.contains("0.900"), "the answer must carry the curve: {saved}");
+        assert!(
+            saved.contains("0.900"),
+            "the answer must carry the curve: {saved}"
+        );
 
         let deleted = message("delete kick 4x4").expect("delete answers");
         assert!(deleted.contains("__seco_presets([])"), "{deleted}");
@@ -1665,11 +1698,8 @@ mod tests {
         let fast = script(&[4.0, 100.0, 0.0, 0.0], b"").expect("shapes");
         assert_ne!(a, fast, "the entry fade must look wider at a faster rate");
 
-        let drawn = crate::custom::CustomCurve::parse(
-            b"0,0.9,0.9,0.9,0.9,0.9,1,1,1,1,1,1,1,1,1,1",
-        );
-        let edited = script(&[2.0, 100.0, 0.0, 0.0], drawn.to_wire().as_bytes())
-            .expect("shapes");
+        let drawn = crate::custom::CustomCurve::parse(b"0,0.9,0.9,0.9,0.9,0.9,1,1,1,1,1,1,1,1,1,1");
+        let edited = script(&[2.0, 100.0, 0.0, 0.0], drawn.to_wire().as_bytes()).expect("shapes");
         assert_ne!(a, edited, "the page must see the curve the user drew");
     }
 
@@ -1684,7 +1714,10 @@ mod tests {
         for shape in &duck::tables() {
             for phase in [0.25_f32, 0.5, 0.75] {
                 let expected = format!("{:.3}", shape.gain(phase, attack));
-                assert!(js.contains(&expected), "{expected} missing from the drawn curves");
+                assert!(
+                    js.contains(&expected),
+                    "{expected} missing from the drawn curves"
+                );
             }
         }
     }

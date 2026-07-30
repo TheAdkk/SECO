@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn the_default_is_a_duck() {
         let shape = CustomCurve::default().shape();
-        assert!(shape.gain(0.0, ATTACK) < 1e-4, "the default must start silent");
+        assert!(
+            shape.gain(0.0, ATTACK) < 1e-4,
+            "the default must start silent"
+        );
         assert!(shape.gain(0.9, ATTACK) > 0.8, "and recover");
     }
 
@@ -157,10 +160,10 @@ mod tests {
         for block in [
             &b""[..],
             b"nope",
-            b"0.1,0.2",                      // too few
+            b"0.1,0.2",                                             // too few
             b"0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,1,1,1,1,1,1", // too many
             b"0,nan,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,1,1,1,1,1",
-            &[0xff, 0xfe],                   // not UTF-8
+            &[0xff, 0xfe], // not UTF-8
         ] {
             assert_eq!(CustomCurve::parse(block), default, "block {block:?}");
         }
@@ -184,6 +187,9 @@ mod tests {
         let block = b"0.8,0.8,0.9,1,1,1,1,1,1,1,1,1,1,1,1,1";
         let curve = CustomCurve::parse(block);
         assert_eq!(curve.points()[0], 0.0);
-        assert!(curve.shape().gain(0.0, ATTACK) < 1e-4, "the beat must still be silent");
+        assert!(
+            curve.shape().gain(0.0, ATTACK) < 1e-4,
+            "the beat must still be silent"
+        );
     }
 }

@@ -27,8 +27,10 @@ use crate::instance;
 pub(crate) struct StateImpl<P>(PhantomData<P>);
 
 impl<P: Plugin> StateImpl<P> {
-    pub(crate) const VTABLE: ClapPluginState =
-        ClapPluginState { save: save::<P>, load: load::<P> };
+    pub(crate) const VTABLE: ClapPluginState = ClapPluginState {
+        save: save::<P>,
+        load: load::<P>,
+    };
     pub(crate) const VTABLE_REF: &'static ClapPluginState = &Self::VTABLE;
 }
 
@@ -77,9 +79,8 @@ unsafe extern "C" fn save<P: Plugin>(
         let remaining = &bytes[written..];
         // SAFETY: stream and its callback are valid for this call; the
         // buffer is ours and lives across it.
-        let n = unsafe {
-            ((*stream).write)(stream, remaining.as_ptr().cast(), remaining.len() as u64)
-        };
+        let n =
+            unsafe { ((*stream).write)(stream, remaining.as_ptr().cast(), remaining.len() as u64) };
         // -1 is an error; 0 would loop forever, treat it as one too.
         if n <= 0 {
             return false;
@@ -108,9 +109,7 @@ unsafe extern "C" fn load<P: Plugin>(
     let mut chunk = [0_u8; 512];
     loop {
         // SAFETY: stream and callback valid for this call; chunk is ours.
-        let n = unsafe {
-            ((*stream).read)(stream, chunk.as_mut_ptr().cast(), chunk.len() as u64)
-        };
+        let n = unsafe { ((*stream).read)(stream, chunk.as_mut_ptr().cast(), chunk.len() as u64) };
         if n < 0 {
             return false;
         }

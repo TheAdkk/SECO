@@ -32,6 +32,26 @@ pub trait Plugin: Send + 'static {
     /// the parameter plumbing. See [`EditorPage`].
     const EDITOR: Option<EditorPage> = None;
 
+    /// How many visualization slots this plugin needs from the adapter.
+    ///
+    /// The slots are a fixed, lock-free picture channel from `process()` to
+    /// [`Plugin::editor_frame`]. Declare only what the editor consumes:
+    /// smaller pictures cost fewer atomic stores and fewer bytes per editor
+    /// refresh. The adapter rejects declarations above its fixed capacity at
+    /// compile time for exported plugins and at construction time otherwise.
+    ///
+    /// The default is zero so plugins without a live picture do not pay for
+    /// an unused channel.
+    const SCOPE_SLOTS: usize = 0;
+
+    /// Requested editor refresh rate in Hertz.
+    ///
+    /// This only controls the adapter-to-editor feed. A page may render less
+    /// often (for example, a user-selected FPS cap) without slowing audio
+    /// analysis. Adapters clamp unreasonable requests before registering a
+    /// host timer.
+    const EDITOR_REFRESH_HZ: u32 = 30;
+
     /// Plugin-specific data for the editor, as JavaScript to evaluate in the
     /// page.
     ///

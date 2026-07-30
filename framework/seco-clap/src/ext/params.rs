@@ -44,7 +44,11 @@ fn clap_flags(range: &ParamRange) -> u32 {
         }
         ParamRange::Toggle { bypass, .. } => {
             let base = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
-            if *bypass { base | CLAP_PARAM_IS_BYPASS } else { base }
+            if *bypass {
+                base | CLAP_PARAM_IS_BYPASS
+            } else {
+                base
+            }
         }
     }
 }
@@ -74,12 +78,10 @@ pub(crate) fn plain_to_display(range: &ParamRange, value: f64) -> Option<String>
         ParamRange::Continuous { unit, decimals, .. } => {
             Some(continuous_text(value, unit, *decimals))
         }
-        ParamRange::Stepped { labels, .. } => {
-            labels.get(step_index(value, labels.len())).map(|label| (*label).to_string())
-        }
-        ParamRange::Toggle { .. } => {
-            Some(if value >= 0.5 { "On" } else { "Off" }.to_string())
-        }
+        ParamRange::Stepped { labels, .. } => labels
+            .get(step_index(value, labels.len()))
+            .map(|label| (*label).to_string()),
+        ParamRange::Toggle { .. } => Some(if value >= 0.5 { "On" } else { "Off" }.to_string()),
     }
 }
 
@@ -171,18 +173,14 @@ unsafe extern "C" fn value_to_text<P: Plugin>(
         return false;
     }
     let text = match &desc.range {
-        ParamRange::Continuous { unit, decimals, .. } => {
-            continuous_text(value, unit, *decimals)
-        }
+        ParamRange::Continuous { unit, decimals, .. } => continuous_text(value, unit, *decimals),
         ParamRange::Stepped { labels, .. } => {
             let Some(label) = labels.get(step_index(value, labels.len())) else {
                 return false;
             };
             (*label).to_string()
         }
-        ParamRange::Toggle { .. } => {
-            if value >= 0.5 { "On" } else { "Off" }.to_string()
-        }
+        ParamRange::Toggle { .. } => if value >= 0.5 { "On" } else { "Off" }.to_string(),
     };
     // SAFETY: host guarantees `out_buffer` holds `out_buffer_capacity` bytes
     // (ext/params.h:275-284).
@@ -221,9 +219,12 @@ unsafe extern "C" fn text_to_value<P: Plugin>(
         },
         // The unit is optional on input: hosts round-trip our own text
         // ("50%"), users type "50".
-        ParamRange::Continuous { unit, .. } => {
-            text.strip_suffix(unit).unwrap_or(text).trim().parse::<f64>().ok()
-        }
+        ParamRange::Continuous { unit, .. } => text
+            .strip_suffix(unit)
+            .unwrap_or(text)
+            .trim()
+            .parse::<f64>()
+            .ok(),
     };
     let Some(value) = parsed.filter(|v| v.is_finite()) else {
         return false;
@@ -295,9 +296,18 @@ mod tests {
             },
             ParamDesc {
                 name: "Step",
-                range: ParamRange::Stepped { labels: &["1/1", "1/2", "1/4"], default: 1 },
+                range: ParamRange::Stepped {
+                    labels: &["1/1", "1/2", "1/4"],
+                    default: 1,
+                },
             },
-            ParamDesc { name: "Tog", range: ParamRange::Toggle { default: false, bypass: false } },
+            ParamDesc {
+                name: "Tog",
+                range: ParamRange::Toggle {
+                    default: false,
+                    bypass: false,
+                },
+            },
         ];
 
         fn new() -> Self {
@@ -322,7 +332,10 @@ mod tests {
         };
         assert!(ok, "value_to_text failed for param {id} value {value}");
         // SAFETY: value_to_text NUL-terminated the buffer.
-        unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap().to_string()
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_str()
+            .unwrap()
+            .to_string()
     }
 
     /// Parses display text back through the host entry point.
@@ -362,7 +375,11 @@ mod tests {
         for value in [0.0, 0.4, 12.5, 50.469_999_999_999_99, 99.6, 100.0] {
             let text = text_of(1, value);
             let parsed = value_of(1, &text).expect("our own text must parse");
-            assert_eq!(text_of(1, parsed), text, "value {value} drifted on re-display");
+            assert_eq!(
+                text_of(1, parsed),
+                text,
+                "value {value} drifted on re-display"
+            );
         }
         // Typed by hand, without the unit, and out of range.
         assert_eq!(value_of(1, "50"), Some(50.0));
@@ -409,11 +426,16 @@ mod tests {
             };
             assert!(ok, "value_to_text failed for param {id} value {value}");
             // SAFETY: value_to_text NUL-terminated the buffer.
-            let host_text =
-                unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap().to_string();
+            let host_text = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+                .to_str()
+                .unwrap()
+                .to_string();
             let gui_text = plain_to_display(&TextOnly::PARAMS[id as usize].range, value)
                 .expect("display formatting failed");
-            assert_eq!(host_text, gui_text, "param {id} value {value}: host vs GUI text");
+            assert_eq!(
+                host_text, gui_text,
+                "param {id} value {value}: host vs GUI text"
+            );
         }
     }
 }

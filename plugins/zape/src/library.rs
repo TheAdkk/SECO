@@ -127,7 +127,10 @@ pub(crate) fn list() -> Vec<Entry> {
         let Some(curve) = read_curve(&path) else {
             continue;
         };
-        entries.push(Entry { name: name.to_owned(), curve });
+        entries.push(Entry {
+            name: name.to_owned(),
+            curve,
+        });
     }
     entries.sort_by_key(|entry| entry.name.to_lowercase());
     entries
@@ -239,7 +242,10 @@ impl TempLibrary {
         // SAFETY: the guard above makes this the only thread touching the
         // environment for the duration.
         unsafe { std::env::set_var("SECO_ZAPE_DIR", &path) };
-        Self { path, _guard: guard }
+        Self {
+            path,
+            _guard: guard,
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -299,7 +305,12 @@ mod tests {
         // Everything landed inside the directory, with the separators gone.
         let names: Vec<String> = list().into_iter().map(|entry| entry.name).collect();
         assert_eq!(names.len(), 3, "{names:?}");
-        assert!(names.iter().all(|name| !name.contains('/') && !name.contains("..")), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains('/') && !name.contains("..")),
+            "{names:?}"
+        );
         let files = std::fs::read_dir(directory().unwrap()).unwrap().count();
         assert_eq!(files, 3, "files escaped the library directory");
 
@@ -321,7 +332,11 @@ mod tests {
     #[test]
     fn preferences_are_remembered_one_file_each() {
         let _library = TempLibrary::new("settings");
-        assert_eq!(read_setting("skin"), None, "no file yet means no preference");
+        assert_eq!(
+            read_setting("skin"),
+            None,
+            "no file yet means no preference"
+        );
         assert!(write_setting("skin", "tianguis"));
         assert_eq!(read_setting("skin").as_deref(), Some("tianguis"));
         assert!(write_setting("skin", "jukebox"));
@@ -341,11 +356,19 @@ mod tests {
         std::fs::write(directory().unwrap().join("notes.txt"), b"not a curve").unwrap();
         std::fs::write(directory().unwrap().join("empty.zapecurve"), b"").unwrap();
         std::fs::write(directory().unwrap().join("junk.zapecurve"), b"hello there").unwrap();
-        std::fs::write(directory().unwrap().join("huge.zapecurve"), vec![b'0'; 5000]).unwrap();
+        std::fs::write(
+            directory().unwrap().join("huge.zapecurve"),
+            vec![b'0'; 5000],
+        )
+        .unwrap();
         std::fs::create_dir_all(directory().unwrap().join("subdir.zapecurve")).unwrap();
         assert!(save("real", drawn()));
 
         let names: Vec<String> = list().into_iter().map(|entry| entry.name).collect();
-        assert_eq!(names, vec!["real".to_string()], "a stray file was listed as a curve");
+        assert_eq!(
+            names,
+            vec!["real".to_string()],
+            "a stray file was listed as a curve"
+        );
     }
 }

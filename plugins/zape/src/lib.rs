@@ -10,9 +10,9 @@ mod custom;
 mod editor;
 mod library;
 
+use custom::CustomCurve;
 use seco_clap::seco_export;
 use seco_core::{AudioBuffer, EditorPage, ParamDesc, ParamRange, Plugin, RtContext};
-use custom::CustomCurve;
 use seco_dsp::{DuckShape, Slew, duck};
 
 const PARAM_RATE: usize = 0;
@@ -136,11 +136,22 @@ impl Plugin for Zape {
             name: "Curve",
             // Names and tables both come from seco-dsp, in one order: the
             // stored value is the index, so the list is append-only.
-            range: ParamRange::Stepped { labels: &CURVE_LABELS, default: 0 },
+            range: ParamRange::Stepped {
+                labels: &CURVE_LABELS,
+                default: 0,
+            },
         },
-        ParamDesc { name: "Bypass", range: ParamRange::Toggle { default: false, bypass: true } },
+        ParamDesc {
+            name: "Bypass",
+            range: ParamRange::Toggle {
+                default: false,
+                bypass: true,
+            },
+        },
     ];
 
+    /// Zape's beat envelope uses the framework's legacy 256-slot picture.
+    const SCOPE_SLOTS: usize = seco_clap::SCOPE_BUCKETS;
     const EDITOR: Option<EditorPage> = Some(editor::PAGE);
 
     fn editor_script(params: &[f64], state: &[u8]) -> Option<String> {
@@ -205,8 +216,11 @@ impl Plugin for Zape {
         // show); the curve blend wants a 0..1 factor.
         let mix = (rt.param(PARAM_MIX).clamp(0.0, 100.0) / 100.0) as f32;
         let curve = (rt.param(PARAM_CURVE).round().max(0.0) as usize).min(CUSTOM_CURVE);
-        let curve =
-            if curve == CUSTOM_CURVE { &self.custom_shape } else { &self.curves[curve] };
+        let curve = if curve == CUSTOM_CURVE {
+            &self.custom_shape
+        } else {
+            &self.curves[curve]
+        };
         let bypass = rt.param(PARAM_BYPASS) >= 0.5;
 
         // Transport is read once per block: a mid-block tempo change lands
@@ -230,7 +244,10 @@ impl Plugin for Zape {
         let attack = (ATTACK_SECONDS / cycle_seconds) as f32;
         let frames = audio.frames();
         let n = frames.min(self.gain.len());
-        debug_assert!(n == frames, "host sent more frames than activate() promised");
+        debug_assert!(
+            n == frames,
+            "host sent more frames than activate() promised"
+        );
 
         if self.needs_snap {
             // Order matters: the phase above is already resynced for this
@@ -320,8 +337,8 @@ clap_wrapper::export_vst3!();
 
 #[cfg(test)]
 mod tests {
-    use seco_core::Transport;
     use seco_core::__private::with_rt_context;
+    use seco_core::Transport;
     use seco_dsp::duck;
 
     use super::*;
@@ -406,12 +423,36 @@ mod tests {
         let flips: [(&str, [f64; 4], [f64; 4]); 8] = [
             ("mix 100 -> 0", [2.0, 100.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]),
             ("mix 0 -> 100", [2.0, 0.0, 0.0, 0.0], [2.0, 100.0, 0.0, 0.0]),
-            ("curve pump -> punch", [2.0, 100.0, 0.0, 0.0], [2.0, 100.0, 1.0, 0.0]),
-            ("curve punch -> soft", [2.0, 100.0, 1.0, 0.0], [2.0, 100.0, 2.0, 0.0]),
-            ("rate 1/4 -> 1/16", [2.0, 100.0, 0.0, 0.0], [4.0, 100.0, 0.0, 0.0]),
-            ("rate 1/16 -> 1/1", [4.0, 100.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0]),
-            ("bypass off -> on", [2.0, 100.0, 1.0, 0.0], [2.0, 100.0, 1.0, 1.0]),
-            ("bypass on -> off", [2.0, 100.0, 1.0, 1.0], [2.0, 100.0, 1.0, 0.0]),
+            (
+                "curve pump -> punch",
+                [2.0, 100.0, 0.0, 0.0],
+                [2.0, 100.0, 1.0, 0.0],
+            ),
+            (
+                "curve punch -> soft",
+                [2.0, 100.0, 1.0, 0.0],
+                [2.0, 100.0, 2.0, 0.0],
+            ),
+            (
+                "rate 1/4 -> 1/16",
+                [2.0, 100.0, 0.0, 0.0],
+                [4.0, 100.0, 0.0, 0.0],
+            ),
+            (
+                "rate 1/16 -> 1/1",
+                [4.0, 100.0, 0.0, 0.0],
+                [0.0, 100.0, 0.0, 0.0],
+            ),
+            (
+                "bypass off -> on",
+                [2.0, 100.0, 1.0, 0.0],
+                [2.0, 100.0, 1.0, 1.0],
+            ),
+            (
+                "bypass on -> off",
+                [2.0, 100.0, 1.0, 1.0],
+                [2.0, 100.0, 1.0, 0.0],
+            ),
         ];
         const BLOCK: usize = 512;
         let beats_per_block = BLOCK as f64 * 120.0 / 60.0 / 48_000.0;
@@ -577,8 +618,7 @@ mod tests {
             // The drawn curve is included: it goes through the same gain()
             // and must obey the same bound, whatever the user drew.
             for curve in 0..=CUSTOM_CURVE {
-                let worst =
-                    worst_step_at(curve as f64, cycle_beats, rate, tempo, sample_rate);
+                let worst = worst_step_at(curve as f64, cycle_beats, rate, tempo, sample_rate);
                 assert!(
                     worst <= bound,
                     "{} at rate {rate}, {tempo} BPM, {sample_rate} Hz: stepped {worst} \
@@ -612,7 +652,10 @@ mod tests {
         // MAX_GAIN_RATE, so a 64-sample block would still be climbing.
         let mid = run_block_with(&mut plugin, &params, 8.5, 512);
         let arrived = *mid.last().unwrap();
-        assert!(arrived > 0.9, "gain {arrived} mid-cycle, the drawn curve is not playing");
+        assert!(
+            arrived > 0.9,
+            "gain {arrived} mid-cycle, the drawn curve is not playing"
+        );
     }
 
     /// `apply_state` runs on the audio thread. The allocation detector armed
@@ -662,12 +705,15 @@ mod tests {
         // The block covered the first eighth of the cycle in both halves,
         // and nothing else.
         let lit: Vec<usize> = (0..BUCKETS).filter(|bucket| read(*bucket) > 0.0).collect();
-        let expected: Vec<usize> =
-            (0..HALF / 8).chain(HALF..HALF + HALF / 8).collect();
+        let expected: Vec<usize> = (0..HALF / 8).chain(HALF..HALF + HALF / 8).collect();
         assert_eq!(lit, expected, "wrong buckets lit");
 
         // What arrived, unducked.
-        assert!((read(0) - 0.5).abs() < 1e-3, "input bucket 0 shows {}", read(0));
+        assert!(
+            (read(0) - 0.5).abs() < 1e-3,
+            "input bucket 0 shows {}",
+            read(0)
+        );
         // What left: the beat is where the duck is deepest, so this is the
         // assertion that would have caught the display showing nothing.
         assert!(
@@ -702,7 +748,10 @@ mod tests {
         });
 
         let peak = f32::from_bits(scope[0].load(Relaxed));
-        assert!((peak - 0.9).abs() < 1e-3, "bucket 0 kept {peak}, not the peak of the pass");
+        assert!(
+            (peak - 0.9).abs() < 1e-3,
+            "bucket 0 kept {peak}, not the peak of the pass"
+        );
     }
 
     /// The complaint that started this: the duck has to be *on* the beat.
@@ -719,14 +768,25 @@ mod tests {
         // inside it, then a block that starts on the beat.
         const BLOCK: usize = 512;
         let beats_per_sample = 120.0 / 60.0 / 48_000.0;
-        let approach =
-            run_block_with(&mut plugin, &params, 8.0 - BLOCK as f64 * beats_per_sample, BLOCK);
+        let approach = run_block_with(
+            &mut plugin,
+            &params,
+            8.0 - BLOCK as f64 * beats_per_sample,
+            BLOCK,
+        );
         let on_beat = run_block_with(&mut plugin, &params, 8.0, 64);
 
-        assert!(on_beat[0] < 0.1, "gain {} at the beat — the duck is late", on_beat[0]);
+        assert!(
+            on_beat[0] < 0.1,
+            "gain {} at the beat — the duck is late",
+            on_beat[0]
+        );
         // And the fade must have done the work before the beat, not after.
         let last = *approach.last().unwrap();
-        assert!(last < 0.15, "gain {last} one sample before the beat — the entry never ran");
+        assert!(
+            last < 0.15,
+            "gain {last} one sample before the beat — the entry never ran"
+        );
     }
 
     /// Hosts with flush-on-transport-change call reset() around jumps. That
@@ -757,7 +817,10 @@ mod tests {
         let out = run_block(&mut plugin, 10.25, 64);
 
         let expected = duck::soft().gain(0.25, TEST_ATTACK);
-        assert!(expected < 0.2, "test premise: Soft at phase 0.25 must duck deep");
+        assert!(
+            expected < 0.2,
+            "test premise: Soft at phase 0.25 must duck deep"
+        );
         assert!(
             (out[0] - expected).abs() < 1e-4,
             "first sample {} must sit on the curve ({expected}), not near 1.0",
@@ -779,7 +842,10 @@ mod tests {
         let second = run_block(&mut plugin, 20.6, 64);
 
         let jump_target = duck::soft().gain(0.6, TEST_ATTACK);
-        assert!(jump_target > 0.5, "test premise: jump lands on a high-gain phase");
+        assert!(
+            jump_target > 0.5,
+            "test premise: jump lands on a high-gain phase"
+        );
         let boundary_step = (second[0] - first[63]).abs();
         assert!(
             boundary_step < 0.02,

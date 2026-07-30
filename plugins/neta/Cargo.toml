@@ -14,6 +14,7 @@ vst3 = ["dep:clap-wrapper"]
 gui = ["seco-clap/gui"]
 
 [dependencies]
+base64 = "0.13"
 neta-meter = { path = "meter" }
 neta-visual = { path = "visual" }
 seco-core = { path = "../../framework/seco-core" }

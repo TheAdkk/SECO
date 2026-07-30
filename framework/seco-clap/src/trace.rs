@@ -9,7 +9,9 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
+};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -59,8 +61,10 @@ impl TransportTrace {
             let bar_start = tp.bar_start as f64 / CLAP_BEATTIME_FACTOR as f64;
             self.bar_start_bits.store(bar_start.to_bits(), Relaxed);
             self.bar_number.store(tp.bar_number, Relaxed);
-            self.tsig
-                .store(u32::from(tp.tsig_num) << 16 | u32::from(tp.tsig_denom), Relaxed);
+            self.tsig.store(
+                u32::from(tp.tsig_num) << 16 | u32::from(tp.tsig_denom),
+                Relaxed,
+            );
         }
     }
 

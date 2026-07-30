@@ -149,6 +149,7 @@ pub(crate) fn create<P: Plugin>(host: *const ClapHost) -> *const ClapPlugin {
                 .into_owned()
         };
         Some(crate::trace::spawn_logger(
+            P::ID,
             name,
             trace.clone(),
             trace_stop.clone(),

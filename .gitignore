@@ -1,3 +1,9 @@
 /target
+# `neta-app` sits outside the workspace, so it builds into its own target
+# directory that the root-anchored rule above does not reach.
+/plugins/neta/app/target
 /reference
 /tmp
+
+# Independent Astro landing workspace (its own Git repository).
+/landingpage/

@@ -28,4 +28,8 @@ rust-version = "1.85"
 [patch.crates-io]
 # VST3 host-idle timers must use wall time. clap-wrapper 0.3.1 used process
 # CPU time on macOS/Linux, making idle-driven editors stutter in DAWs.
-clap-wrapper = { path = "plugins/neta/vendor/clap-wrapper" }
+#
+# Vendored at the workspace root rather than under a plugin: this patch is
+# declared here and both Zape and Neta build VST3 through it, so it never
+# belonged to either one.
+clap-wrapper = { path = "vendor/clap-wrapper" }

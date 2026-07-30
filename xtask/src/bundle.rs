@@ -416,4 +416,28 @@ mod tests {
         assert!(plist.contains("A &amp; B &lt;test&gt;"));
         assert!(!plist.contains("A & B"));
     }
+    /// The vendored `clap-wrapper` still carries the SECO timer patch.
+    ///
+    /// This lives with the tool that assembles VST3 bundles, because that is
+    /// what the patch serves. It is a build-integrity check, not a unit test:
+    /// a `cargo update` or a re-vendor that quietly restored upstream's
+    /// process-CPU clock would give every VST3 build a stuttering editor and
+    /// nothing else would notice.
+    #[test]
+    fn the_vendored_vst3_wrapper_keeps_its_monotonic_timer() {
+        const MACOS_TICKS: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vendor/clap-wrapper/external/clap-wrapper/src/detail/os/macos.mm"
+        ));
+        const LINUX_TICKS: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vendor/clap-wrapper/external/clap-wrapper/src/detail/os/linux.cpp"
+        ));
+        for source in [MACOS_TICKS, LINUX_TICKS] {
+            assert!(source.contains("std::chrono::steady_clock"));
+            assert!(source.contains("std::chrono::milliseconds"));
+        }
+        assert!(!MACOS_TICKS.contains("::clock()"));
+        assert!(!LINUX_TICKS.contains("return clock()"));
+    }
 }

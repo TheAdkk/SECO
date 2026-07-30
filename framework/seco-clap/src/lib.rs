@@ -59,25 +59,3 @@ pub const MAX_SCOPE_BUCKETS: usize = 1_024;
 pub mod __reexport {
     pub use seco_core::Plugin;
 }
-
-#[cfg(test)]
-mod vst3_wrapper_tests {
-    const MACOS_TICKS: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/neta/vendor/clap-wrapper/external/clap-wrapper/src/detail/os/macos.mm"
-    ));
-    const LINUX_TICKS: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/neta/vendor/clap-wrapper/external/clap-wrapper/src/detail/os/linux.cpp"
-    ));
-
-    #[test]
-    fn vendored_vst3_timers_use_monotonic_milliseconds() {
-        for source in [MACOS_TICKS, LINUX_TICKS] {
-            assert!(source.contains("std::chrono::steady_clock"));
-            assert!(source.contains("std::chrono::milliseconds"));
-        }
-        assert!(!MACOS_TICKS.contains("::clock()"));
-        assert!(!LINUX_TICKS.contains("return clock()"));
-    }
-}

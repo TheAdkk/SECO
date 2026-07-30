@@ -10,9 +10,15 @@ members = [
     "plugins/neta/meter",
     "plugins/neta/visual",
     "plugins/neta/wgpu",
-    "plugins/neta/app",
     "xtask",
 ]
+
+# `neta-app` depends on `dalia-core` through a path that leaves this
+# repository, so cargo cannot even load the workspace manifest anywhere the
+# sibling checkout is absent — CI included. Excluded until that dependency is
+# reachable from a clone; the binary still builds with
+# `cargo build --manifest-path plugins/neta/app/Cargo.toml`.
+exclude = ["plugins/neta/app"]
 
 [workspace.package]
 version = "0.1.0"

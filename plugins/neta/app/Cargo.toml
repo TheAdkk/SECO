@@ -1,10 +1,16 @@
 [package]
 name = "neta-app"
-version.workspace = true
-edition.workspace = true
+# Literals rather than `workspace = true`: inheritance needs membership, and
+# this package is excluded from the workspace.
+version = "0.1.0"
+edition = "2024"
 # `wgpu` 29 supports Rust 1.87+. Keep this requirement local to Neta's
 # standalone GPU application instead of raising every unrelated SECO crate.
 rust-version = "1.87"
+
+# Its own workspace root. `workspace.exclude` above keeps cargo from treating
+# this as a member; this keeps it from believing it still is one.
+[workspace]
 
 [[bin]]
 name = "neta-app"

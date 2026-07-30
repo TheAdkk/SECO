@@ -1691,6 +1691,16 @@ mod tests {
     /// (it changes how wide the dip entry is), and so does the drawn curve.
     #[test]
     fn only_the_rate_and_the_drawn_curve_change_the_snippet() {
+        // The snippet also carries the skin, which `script` reads from the
+        // library on disk. Holding a `TempLibrary` takes the library lock for
+        // the whole test, which is what makes this assertion mean anything:
+        // without it a sibling test's own `TempLibrary` could point
+        // `SECO_ZAPE_DIR` somewhere else between these two calls, and the two
+        // snippets would differ by their skin rather than by anything the test
+        // is about. It failed exactly that way on CI, `dread` against
+        // `jukebox`, while passing on a machine that happened to schedule the
+        // tests in a kinder order.
+        let _library = crate::library::TempLibrary::new("editor-snippet");
         let a = script(&[2.0, 100.0, 0.0, 0.0], b"").expect("shapes");
         let b = script(&[2.0, 0.0, 2.0, 1.0], b"").expect("shapes");
         assert_eq!(a, b);

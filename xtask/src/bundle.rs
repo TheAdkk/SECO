@@ -170,7 +170,17 @@ pub fn assemble_at(
 
 /// Ad-hoc signature: Apple Silicon refuses unsigned code. Nothing to do on
 /// the other two.
+///
+/// Gated on the *host*, not on the target platform. `codesign` is a macOS tool,
+/// so a Linux or Windows machine assembling a macOS layout cannot sign it and
+/// must not fail trying — which is what `vst3_is_a_bundle_everywhere` and
+/// `only_macos_gets_a_plist` do from any host, and what CI does on ubuntu. The
+/// Mac that ships a bundle is the one that signs it, and `package.yml` builds
+/// each platform on its own runner.
 fn sign(artifact: &Path) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
     let status = Command::new("codesign")
         .args(["--force", "--sign", "-"])
         .arg(artifact)
